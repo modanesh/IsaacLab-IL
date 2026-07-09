@@ -11,10 +11,10 @@ animal's gait.
 
 ```
  📄 3D keypoint CSV  (from CopyQuad)
-      │  3-  scripts/retargeting/preprocess_csv.py                   ->  cleaned reference skeleton (.npz)
-      │  4-  scripts/retargeting/retarget.py                         ->  ANYmal-D joint trajectory
-      │  5-  scripts/environments/data/recover_root_translation.py   ->  global body motion
-      │  6-  scripts/environments/train_motion_imitation.py          ->  tracking policy
+      |  3-  scripts/retargeting/preprocess_csv.py                   ->  cleaned reference skeleton (.npz)
+      |  4-  scripts/retargeting/retarget.py                         ->  ANYmal-D joint trajectory
+      |  5-  scripts/environments/data/recover_root_translation.py   ->  global body motion
+      |  6-  scripts/environments/train_motion_imitation.py          ->  tracking policy
  🤖 ANYmal-D policy
 ```
 
