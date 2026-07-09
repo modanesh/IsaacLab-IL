@@ -822,7 +822,7 @@ def test_rigid_body_twist_transform(device):
     v_BB, w_BB = math_utils.rigid_body_twist_transform(v_AA, w_AA, t_AB, q_AB)
 
     # Get back twists in A in frame A
-    t_BA = -math_utils.quat_rotate_inverse(q_AB, t_AB)
+    t_BA = -math_utils.quat_apply_inverse(q_AB, t_AB)
     q_BA = math_utils.quat_conjugate(q_AB)
     v_AA_, w_AA_ = math_utils.rigid_body_twist_transform(v_BB, w_BB, t_BA, q_BA)
 
@@ -1004,7 +1004,7 @@ def test_quat_apply_benchmarks():
     for more flexibility in the input dimensions and is faster than `torch.bmm`.
     """
 
-    # define old implementation for quat_rotate and quat_rotate_inverse
+    # define old implementation for quat_rotate and quat_apply_inverse
     # Based on commit: cdfa954fcc4394ca8daf432f61994e25a7b8e9e2
 
     @torch.jit.script
@@ -1106,7 +1106,7 @@ def test_quat_apply_benchmarks():
             return out
 
         def iter_bmm_quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-            """Iterative implementation of old quat_rotate_inverse using torch.bmm."""
+            """Iterative implementation of old quat_apply_inverse using torch.bmm."""
             out = torch.empty_like(v)
             for i in range(q.shape[1]):
                 for j in range(q.shape[2]):
@@ -1122,7 +1122,7 @@ def test_quat_apply_benchmarks():
             return out
 
         def iter_einsum_quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-            """Iterative implementation of old quat_rotate_inverse using torch.einsum."""
+            """Iterative implementation of old quat_apply_inverse using torch.einsum."""
             out = torch.empty_like(v)
             for i in range(q.shape[1]):
                 for j in range(q.shape[2]):

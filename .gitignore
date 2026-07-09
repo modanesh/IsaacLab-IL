@@ -73,3 +73,35 @@ tests/
 # TacSL sensor
 **/tactile_record/*
 **/gelsight_r15_data/*
+
+# ============================================================================
+# CopyQuad release: keep the video->motion->policy PIPELINE; exclude experiments,
+# diagnostics, and bulk checkpoints (all preserved on the archive/pre-release branch).
+# The 5 final motions + 5 chosen policies are force-added past these ignores.
+# ============================================================================
+scripts/environments/checkpoints/
+scripts/environments/data/motions/
+scripts/retargeting/data/
+**/*_diag_*.png
+scripts/environments/data/*.png
+scripts/environments/data/pace*.npz
+# our diagnostic-only scripts (pipeline kept: retarget, helpers, preprocess,
+# train_motion_imitation, recover_root_translation, polish_motion, playback)
+scripts/retargeting/diagnose_retarget.py
+scripts/retargeting/diagnose_motion_full.py
+scripts/retargeting/balance_retarget.py
+scripts/retargeting/batch_retarget.py
+scripts/retargeting/test_preprocess.py
+scripts/environments/diagnose_com_support.py
+scripts/environments/graphing_joint_motion.py
+scripts/environments/motion_to_isaac.py
+scripts/environments/export_IODescriptors.py
+scripts/environments/train_motion_imitation_ghost.py
+scripts/environments/train_motion_imitation_mo.py
+scripts/environments/data/clamp_motion_joints.py
+scripts/environments/data/trim_loop_motion.py
+scripts/environments/data/smooth_and_diagnose_motion.py
+scripts/environments/data/convert_txt_to_npz.py
+
+# stray top-level checkpoints
+/checkpoints/

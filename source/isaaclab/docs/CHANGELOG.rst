@@ -1420,12 +1420,12 @@ Added
 ^^^^^
 
 * Added deprecation warning for :meth:`~isaaclab.utils.math.quat_rotate` and
-  :meth:`~isaaclab.utils.math.quat_rotate_inverse`
+  :meth:`~isaaclab.utils.math.quat_apply_inverse`
 
 Changed
 ^^^^^^^
 
-* Changed all calls to :meth:`~isaaclab.utils.math.quat_rotate` and :meth:`~isaaclab.utils.math.quat_rotate_inverse` to
+* Changed all calls to :meth:`~isaaclab.utils.math.quat_rotate` and :meth:`~isaaclab.utils.math.quat_apply_inverse` to
   :meth:`~isaaclab.utils.math.quat_apply` and :meth:`~isaaclab.utils.math.quat_apply_inverse` for speed.
 
 
@@ -3042,7 +3042,7 @@ Added
 Changed
 ^^^^^^^
 
-* Modified:meth:`quat_rotate` and :meth:`quat_rotate_inverse` operations to use :meth:`torch.einsum`
+* Modified:meth:`quat_rotate` and :meth:`quat_apply_inverse` operations to use :meth:`torch.einsum`
   for faster processing of high dimensional input tensors.
 
 

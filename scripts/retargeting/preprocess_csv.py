@@ -1,23 +1,39 @@
 """
-preprocess_csv.py — Convert animal motion-capture CSV to retargeting-ready .npz
+preprocess_csv.py — Convert a video-keypoint CSV (DLC + depth) to a
+retargeting-ready .npz
 
 Coordinate convention
 ---------------------
-The source mocap CSV is assumed to be in a y-up right-handed frame (x, y, z)_src.
-IsaacLab uses a z-up right-handed frame (x, y, z)_iso. We convert between them
-with a proper rotation of +90° about the x-axis:
+The source CSV comes from copydog's video pipeline (DeepLabCut 2D keypoints +
+Video-Depth-Anything depth, see copydog/scripts/get_depth.py) and is in a
+right-handed CAMERA/IMAGE frame:
+
+    x_src: image x, pixels, positive right
+    y_src: image y, pixels, positive DOWN
+    z_src: root-relative depth offset, positive AWAY from the camera
+           (uncalibrated units derived from disparity — much smaller in
+           magnitude than the pixel axes; see get_depth.py)
+
+IsaacLab uses a z-up right-handed frame (x, y, z)_iso. We convert with a
+proper rotation of -90° about the x-axis:
 
                        | 1  0   0 |
-    R_x(+90°)  =       | 0  0  -1 |
-                       | 0  1   0 |
+    R_x(-90°)  =       | 0  0   1 |
+                       | 0 -1   0 |
 
-    (x, y, z)_iso = (x_src, -z_src, y_src)      # forward-x preserved, up-y -> up-z
+    (x, y, z)_iso = (x_src, z_src, -y_src)   # x preserved, depth -> +y, up(-y_img) -> +z
 
 This is a determinant-+1 rotation (handedness preserved), unlike a naive
-(x, y, z) -> (x, z, y) swap which would invert chirality and silently corrupt
-downstream rotations. The transform is applied once, immediately after CSV
-parsing, so every subsequent operation (smoothing, root-frame estimation, foot
-extraction) runs in IsaacLab coordinates and requires no further changes.
+axis swap which would invert chirality and silently corrupt downstream
+rotations (e.g. swap the left/right legs). For a subject walking toward
++x_img this puts its anatomical left at +y_iso, as required. The transform
+is applied once, immediately after CSV parsing, so every subsequent
+operation (smoothing, root-frame estimation, foot extraction) runs in
+IsaacLab coordinates and requires no further changes.
+
+NOTE: the three axes are NOT in the same units (x, z in pixels; y in depth
+units). Per-axis scale factors in helpers.compute_scale_factors absorb this
+to first order, but the y axis carries far less signal than x/z.
 """
 
 from __future__ import annotations
@@ -44,18 +60,11 @@ THIGH_NAMES = [
 
 TRUNK_NAMES = ["neck_base", "back_middle", "back_end"]
 
-"""
-In this script the term "mocap" is used to reference the keypoint animation.
+def _camera_to_isaac(xyz_src: np.ndarray) -> np.ndarray:
+    """Rotate camera-frame keypoints (x right, y down, z away-from-camera)
+    into IsaacLab's z-up frame.
 
-In the original version, the retargeting was performed on a mocap reference.
-This later generalized to DeepLabCut 2D footage extractions, which stopped making sense.
-The terminology was used too frequently to warrant a change.
-"""
-
-def _mocap_to_isaac(xyz_src: np.ndarray) -> np.ndarray:
-    """Rotate y-up mocap coordinates into IsaacLab's z-up frame.
-
-    Applied 90 deg rot: (x, y, z) -> (x, -z, y)
+    Applied rotation R_x(-90 deg): (x, y, z)_src -> (x, z, -y)_iso
 
     Args:
         xyz_src: Array with shape (..., 3) holding source (x, y, z) positions.
@@ -70,16 +79,16 @@ def _mocap_to_isaac(xyz_src: np.ndarray) -> np.ndarray:
     return out
 
 
-def parse_mocap_csv(csv_path: str) -> dict[str, np.ndarray]:
-    """Parse a two-row-header mocap CSV into a keypoint dictionary.
+def parse_keypoint_csv(csv_path: str) -> dict[str, np.ndarray]:
+    """Parse a two-row-header video-keypoint CSV into a keypoint dictionary.
 
     The CSV is expected to have a part name row followed by a field name row
     (e.g. "x", "y", "z", "likelihood"), with one data row per frame thereafter.
-    Positions are transformed from the mocap capture frame into the IsaacLab
-    z-up coordinate frame via ``_mocap_to_isaac``.
+    Positions are transformed from the camera frame into the IsaacLab
+    z-up coordinate frame via ``_camera_to_isaac``.
 
     Args:
-        csv_path: Path to the mocap CSV file.
+        csv_path: Path to the keypoint CSV file (output of copydog's get_depth.py).
 
     Returns:
         A dict mapping each body-part name to a float32 array of shape
@@ -123,7 +132,7 @@ def parse_mocap_csv(csv_path: str) -> dict[str, np.ndarray]:
             [raw[:, fields["x"]], raw[:, fields["y"]], raw[:, fields["z"]]],
             axis=-1,
         )
-        iso_xyz = _mocap_to_isaac(src_xyz)
+        iso_xyz = _camera_to_isaac(src_xyz)
         likelihood = raw[:, fields["likelihood"]]
 
         # Preserve the [x, y, likelihood, z] column layout expected by the rest
@@ -291,69 +300,6 @@ def mean_quaternion(quats: np.ndarray) -> np.ndarray:
     return mean_q.astype(np.float32)
 
 
-### NOTE: THIS IS NOT USED IN OUR EXPERIMENTS but CLAUDE rec'd using this
-
-# def estimate_root_rot(keypoints: dict[str, np.ndarray]) -> np.ndarray:
-#     """Constant root orientation from the regularized thigh configuration.
-
-#     Straight-walk prior: the dog's heading is constant, so we discard
-#     per-frame rotation estimates and instead extract a single heading from
-#     the time-averaged thigh geometry.
-
-#     For each thigh i in {FL, FR, BL, BR} we compute its mean world-frame
-#     offset from the root:
-
-#         d_bar_i = (1/T) * sum_t (p_thigh_i(t) - p_root(t))   in R^3.
-
-#     Because the clip is a straight walk with (by assumption) constant
-#     heading, these mean offsets span the canonical body-frame hip rectangle
-#     rotated by the unknown heading R. Forward and lateral axes follow from
-#     the rectangle:
-
-#         f_hat = normalize( mean(d_FL, d_FR) - mean(d_BL, d_BR) )   # +x body
-#         l_hat = normalize( mean(d_FL, d_BL) - mean(d_FR, d_BR) )   # +y body
-
-#     We project (f_hat, l_hat) onto the horizontal plane before extracting
-#     z_hat = f_hat x l_hat, enforcing the straight-walk assumption that the
-#     heading is a pure yaw (no pitch/roll bias from thigh-swing noise).
-#     The in-plane axes are then re-orthogonalised.
-
-#     This is strictly better-conditioned than neck<->back-end: the four hip
-#     joints form a roughly rigid rectangle, whereas the spine deforms during
-#     locomotion and injects a heading bias.
-#     """
-#     root = estimate_root_pos(keypoints)  # (T, 3), already in IsaacLab z-up
-#     thighs = np.stack([xyz(keypoints[n]) for n in THIGH_NAMES], axis=1)  # (T, 4, 3)
-
-#     # Time-averaged thigh offsets from root (FL, FR, BL, BR).
-#     d_bar = (thighs - root[:, None, :]).mean(axis=0)  # (4, 3)
-#     d_fl, d_fr, d_bl, d_br = d_bar[0], d_bar[1], d_bar[2], d_bar[3]
-
-#     fwd = 0.5 * (d_fl + d_fr) - 0.5 * (d_bl + d_br)   # front - back
-#     lat = - 0.5 * (d_fl + d_bl) + 0.5 * (d_fr + d_br)   # right - left
-
-#     # Straight-walk prior: heading is a pure yaw. Kill any z component in
-#     # the in-plane axes before building the frame so noise in thigh height
-#     # cannot tilt the body (no pitch/roll bias).
-#     fwd[2] = 0.0
-#     lat[2] = 0.0
-#     fwd = fwd / np.clip(np.linalg.norm(fwd), 1e-8, None)
-#     lat = lat / np.clip(np.linalg.norm(lat), 1e-8, None)
-
-#     z_axis = np.cross(fwd, lat)
-#     z_axis = z_axis / np.clip(np.linalg.norm(z_axis), 1e-8, None)   # +z world
-#     y_axis = np.cross(z_axis, fwd)                                   # re-orthog. left
-#     y_axis = y_axis / np.clip(np.linalg.norm(y_axis), 1e-8, None)
-
-#     R_single = np.stack([fwd, y_axis, z_axis], axis=-1)[None, :, :]  # (1, 3, 3)
-#     q_single = _rotmat_to_quat_batch(R_single)[0]                    # (4,)
-#     if q_single[0] < 0.0:
-#         q_single = -q_single                                          # canonical sign
-
-#     T = root.shape[0]
-#     return np.broadcast_to(q_single[None, :], (T, 4)).copy().astype(np.float32)
-
-
 def estimate_root_rot(keypoints: dict[str, np.ndarray]) -> np.ndarray:
     """Constant root orientation from the regularized thigh configuration.
 
@@ -385,27 +331,15 @@ def estimate_root_rot(keypoints: dict[str, np.ndarray]) -> np.ndarray:
     """
     root = estimate_root_pos(keypoints)  # (T, 3), already in IsaacLab z-up
     thighs = np.stack([xyz(keypoints[n]) for n in THIGH_NAMES], axis=1)  # (T, 4, 3)
-    feet = np.stack([xyz(keypoints[n]) for n in FOOT_NAMES], axis=1) 
-
-    print(root.shape)
-    print(feet.shape)
 
     # Time-averaged thigh offsets from root (FL, FR, BL, BR).
     d_bar = (thighs - root[:, None, :]).mean(axis=0)  # (4, 3)
     d_fl, d_fr, d_bl, d_br = d_bar[0], d_bar[1], d_bar[2], d_bar[3]
 
-    f_bar = feet - root[:, None, :]
-    f_fl, f_fr, f_bl, f_br = f_bar[:, 0], f_bar[:, 1], f_bar[:, 2], f_bar[:, 3]
-
-    f_fl_grad = np.gradient(f_fl)
-    f_fr_grad = np.gradient(f_fr)
-    f_bl_grad = np.gradient(f_bl)
-    f_br_grad = np.gradient(f_br)
-
-    # MODIFY STARTING FROM HERE TO COMPLETE: 
-
-    fwd = 0.5 * (d_fl + d_fr) - 0.5 * (d_bl + d_br)   # front - back
-    lat = - 0.5 * (d_fl + d_bl) + 0.5 * (d_fr + d_br)   # right - left
+    fwd = 0.5 * (d_fl + d_fr) - 0.5 * (d_bl + d_br)   # front - back  (+x body)
+    # left - right (+y body). Must point LEFT so that z = fwd x lat points UP;
+    # the reversed sign builds an upside-down (180deg-roll) body frame.
+    lat = 0.5 * (d_fl + d_bl) - 0.5 * (d_fr + d_br)
 
     # Straight-walk prior: heading is a pure yaw. Kill any z component in
     # the in-plane axes before building the frame so noise in thigh height
@@ -498,7 +432,7 @@ def regularize_hips_to_anchor(
     Motivation
     ----------
     On the ANYmal-D, the four hip joints (leg roots) are rigidly attached to
-    the base: their positions in the body frame are *constants*. Raw mocap of
+    the base: their positions in the body frame are *constants*. Raw video keypoints of
     the dog's thighs, however, drifts frame-to-frame due to sensor noise and
     soft-tissue artefacts, sometimes to the point of a left hip appearing on
     the right side of the body. Because the thighs act as leg anchors for
@@ -519,7 +453,7 @@ def regularize_hips_to_anchor(
         p_tilde_i(t) = ( p_i(t) + lambda * p_bar_i ) / (1 + lambda).
 
     Limits:
-      lambda = 0       -> no correction (original mocap preserved).
+      lambda = 0       -> no correction (original keypoints preserved).
       lambda -> inf    -> hips fully pinned to the per-hip mean (rigid).
       lambda ~ O(1-10) -> progressive shrinkage toward the anchor, eliminating
                           pathological cross-body drift while preserving
@@ -529,7 +463,7 @@ def regularize_hips_to_anchor(
     robot" is the meaningful notion of fixed), then rotated back into world
     coordinates before being written to `keypoints` so that downstream stages
     (`estimate_root_pos` re-estimation notwithstanding, `extract_thigh_positions`,
-    `compute_scale_factors`, `retarget.py`) see a mocap-compatible signal.
+    `compute_scale_factors`, `retarget.py`) see a layout-compatible signal.
 
     Note that the **foot** keypoints are deliberately left untouched: only the
     leg roots are being corrected. Foot motion fidelity is the point of the
@@ -599,10 +533,10 @@ def csv_to_npz(
     lh_threshold: float = 0.5,
     hip_lambda: float = 5.0,
 ) -> None:
-    """Convert mocap CSV to retarget-ready npz  (Acts as the main function for this script).
+    """Convert a video-keypoint CSV to retarget-ready npz  (Acts as the main function for this script).
 
     Args:
-        csv_path:    Input DeepLabCut / mocap CSV.
+        csv_path:    Input keypoint CSV (DeepLabCut + depth, from copydog).
         output_path: Destination .npz.
         fps:         Source frame rate (Hz).
         lh_threshold: Likelihood threshold below which frames are interpolated.
@@ -610,13 +544,13 @@ def csv_to_npz(
                      keypoint toward its body-frame temporal mean. Pass 0.0 to
                      disable. On the ANYmal-D, hips are rigidly mounted on the
                      base and *cannot* translate; this regulariser forces the
-                     mocap hips to honour that constraint without discarding
+                     extracted hips to honour that constraint without discarding
                      their (small) per-frame variation entirely.
     """
     
     dt = 1.0 / fps  # the dt becomes important for retargeting as Isaac as a diff rate than the clip
     # Pipelines keypoints through three functions, you can optionally take some of them out
-    keypoints = parse_mocap_csv(csv_path)
+    keypoints = parse_keypoint_csv(csv_path)
     keypoints = smooth_low_confidence(keypoints, threshold=lh_threshold)
     keypoints = temporal_smooth_keypoints(keypoints, window=7)
 
@@ -649,6 +583,17 @@ def csv_to_npz(
     foot_pos = smooth_series(extract_foot_positions(keypoints), window=5)
     thigh_pos = smooth_series(extract_thigh_positions(keypoints), window=5)
 
+    # Per-frame torso PITCH (radians) from the spine (neck_base -> back_end). The thighs are
+    # hip-regularized (rigid => constant tilt), so they can't drive a posture transition; the
+    # spine is NOT regularized, so it captures the real stand<->bow<->stand body tilt per frame.
+    # pitch = elevation of the (neck - tail) vector from horizontal (heading-invariant):
+    # ~0 standing, negative when the front dips (bow), positive when the front rises (sit/beg).
+    _nb = xyz(keypoints["neck_base"]); _be = xyz(keypoints["back_end"])
+    _spine = _nb - _be
+    _pitch = np.arctan2(_spine[:, 2], np.maximum(np.hypot(_spine[:, 0], _spine[:, 1]), 1e-6))
+    _w = 5; _k = np.ones(_w) / _w
+    torso_pitch = np.convolve(np.pad(_pitch, (_w // 2, _w // 2), "edge"), _k, "valid")[:len(_pitch)].astype(np.float32)
+
     out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     # Save to output location via compressed format
@@ -659,6 +604,7 @@ def csv_to_npz(
         root_rot=root_rot.astype(np.float32),
         foot_pos=foot_pos.astype(np.float32),
         thigh_pos=thigh_pos.astype(np.float32),
+        torso_pitch=torso_pitch,
         fps=np.array([fps], dtype=np.float32),
         dt=np.array([dt], dtype=np.float32),
         up_axis=np.array(["z"]),  # IsaacLab convention marker
@@ -667,7 +613,7 @@ def csv_to_npz(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Convert animal motion-capture CSV to retargeting .npz")
+    parser = argparse.ArgumentParser(description="Convert animal video-keypoint CSV (DLC + depth) to retargeting .npz")
     parser.add_argument("--csv", type=str, required=True)
     parser.add_argument("--output", type=str, required=True)
     parser.add_argument("--fps", type=float, required=True)

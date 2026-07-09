@@ -57,6 +57,8 @@ class ReferenceMotion:
     root_lin_vel: np.ndarray | None
     root_ang_vel: np.ndarray | None
     dt: float
+    thigh_pos: np.ndarray | None = None  # (T,4,3) FL,FR,BL,BR — used by posture mode
+    torso_pitch: np.ndarray | None = None  # (T,) per-frame spine pitch (rad) — posture mode
 
 
 def _normalize_quaternions_np(quats: np.ndarray) -> np.ndarray:
@@ -152,6 +154,8 @@ def load_reference_motion(path: str, fps: float) -> ReferenceMotion:
     root_pos = _get("root_pos")
     root_rot = ensure_quaternion_continuity(_get("root_rot"))
     foot_pos = _get("foot_pos")
+    thigh_pos = _get("thigh_pos", required=False)
+    torso_pitch = _get("torso_pitch", required=False)
     root_lin_vel = _get("root_lin_vel", required=False)
     root_ang_vel = _get("root_ang_vel", required=False)
 
@@ -176,6 +180,8 @@ def load_reference_motion(path: str, fps: float) -> ReferenceMotion:
         root_lin_vel=root_lin_vel,
         root_ang_vel=root_ang_vel,
         dt=dt,
+        thigh_pos=thigh_pos,
+        torso_pitch=torso_pitch,
     )
 
 
@@ -228,6 +234,8 @@ class QuadrupedRetargeter:
         ik_damping: float,
         physics_dt: float,
         num_envs: int,
+        render: bool = False,
+        relax_front_knees: bool = False,
     ):
         self.robot = robot
         self.scene = scene
@@ -237,6 +245,9 @@ class QuadrupedRetargeter:
         self.ik_iters = ik_iterations
         self.physics_dt = physics_dt
         self.num_envs = num_envs
+        # Render every inner IK iteration only when a viewer is attached;
+        # in headless export runs this would just burn ~20 renders per frame.
+        self.render = render
         self.is_fixed_base = bool(getattr(robot, "is_fixed_base", False))
 
         ik_cfg = DifferentialIKControllerCfg(
@@ -267,6 +278,40 @@ class QuadrupedRetargeter:
             joint_id = all_joint_names.index(joint_name)
             self.default_qpos[:, joint_id] = float(value)
 
+        # --- Knee-branch constraint -------------------------------------------
+        # A 2-link leg has TWO IK solutions for any reachable foot position
+        # (knee bent one way or the other). The ANYmal-D's URDF KFE soft limits
+        # are absurdly wide (~+-8.95 rad = +-512 deg), so the DLS solver is free
+        # to slip into the WRONG (outward) branch — or wrap the angle past +-pi —
+        # whenever the foot target is noisy. The warm start then carries that bad
+        # branch forward for the rest of the clip. This was seen on the low-res
+        # tigdog clips: front KFE ran to -4.5 rad (wrapped) / +2.3 rad (flipped)
+        # instead of staying negative like every clean clip (~ -1.0..-1.8).
+        #
+        # ANYmal-D walks in the X-configuration: front knees flex NEGATIVE
+        # (default -0.8), hind knees POSITIVE (default +0.8). We build per-joint
+        # effective limits that keep each KFE on the sign of its default pose,
+        # with a magnitude cap comfortably above the real gait range (clean clips
+        # peaked ~ +-2.06 rad), so legitimate motion is untouched but the outward
+        # branch and angle-wrapping are forbidden.
+        KNEE_EPS = 0.05   # keep a hair off the straight-leg singularity
+        KNEE_MAX = 2.80   # > observed gait max (~2.06), < the loose URDF limit
+        soft = self.robot.data.soft_joint_pos_limits.clone()  # (E, J, 2)
+        self.eff_lo = soft[..., 0].clone()
+        self.eff_hi = soft[..., 1].clone()
+        for jid, jname in enumerate(all_joint_names):
+            if not jname.endswith("KFE"):
+                continue
+            if float(self.default_qpos[0, jid]) < 0.0:      # front knee: normally negative (X-config)
+                self.eff_lo[:, jid] = torch.clamp(self.eff_lo[:, jid], min=-KNEE_MAX)
+                # Posture mode: also allow the front knee to flex POSITIVE, so the front legs
+                # can extend down-forward into a bow. The X-config negative-only branch keeps
+                # the foot behind the knee and tucks the legs.
+                self.eff_hi[:, jid] = KNEE_MAX if relax_front_knees else -KNEE_EPS
+            else:                                            # hind knee: positive
+                self.eff_lo[:, jid] = KNEE_EPS
+                self.eff_hi[:, jid] = torch.clamp(self.eff_hi[:, jid], max=KNEE_MAX)
+
         # Fixed base pose for "pinned in the air" retargeting.
         # Robot root is locked at (0, 0, 0.5) world with identity orientation (wxyz).
         self.fixed_root_pos = torch.tensor(
@@ -275,6 +320,21 @@ class QuadrupedRetargeter:
         self.fixed_root_rot = torch.tensor(
             [[1.0, 0.0, 0.0, 0.0]], dtype=torch.float32, device=device
         ).expand(num_envs, -1).contiguous()
+
+        # Warm start: previous frame's IK solution. Restarting every frame from
+        # the default pose lets DLS hop between IK branches and shows up as
+        # frame-to-frame jitter in the exported clip.
+        self._warm_jpos: torch.Tensor | None = None
+
+    def set_fixed_base(self, pos: np.ndarray, rot: np.ndarray) -> None:
+        """Override the pinned base pose. Posture/sit retargeting uses this to tilt
+        (and lower) the base instead of the default level (0,0,0.5) + identity."""
+        self.fixed_root_pos = torch.tensor(
+            np.asarray(pos, dtype=np.float32).reshape(1, 3), device=self.device
+        ).expand(self.num_envs, -1).contiguous()
+        self.fixed_root_rot = torch.tensor(
+            np.asarray(rot, dtype=np.float32).reshape(1, 4), device=self.device
+        ).expand(self.num_envs, -1).contiguous()
 
     def _flush_state(self, joint_pos, joint_vel=None):
         if joint_vel is None:
@@ -285,7 +345,8 @@ class QuadrupedRetargeter:
         self.scene.update(self.physics_dt)
         self.robot.update(self.physics_dt)
 
-        self.sim.render()
+        if self.render:
+            self.sim.render()
 
     def _teleport_base(self, root_pos_t: torch.Tensor, root_rot_t: torch.Tensor) -> None:
         root_state = self.robot.data.default_root_state.clone()
@@ -299,19 +360,20 @@ class QuadrupedRetargeter:
         dev = self.device
         E = self.num_envs
 
-        # Base is pinned: ignore the per-frame reference root and use the fixed pose.
-        # `foot_pos_local` is already expressed in the *reference* root frame
-        # (from the original root_pos/root_rot), which is exactly what we want
-        # to feed the IK as base-frame targets for the pinned robot.
-        rp = self.fixed_root_pos
-        rr = self.fixed_root_rot
+        # Teleport the base to the requested per-frame pose. For locomotion this is the
+        # constant level (0,0,0.5)+identity (behaviour unchanged); for posture mode it is
+        # the per-frame tilted/lowered base, so stand<->bow transitions come through.
+        # `foot_pos_local` is expressed in that same base frame.
+        rp = torch.as_tensor(root_pos, dtype=torch.float32, device=dev).reshape(1, 3).expand(E, -1).contiguous()
+        rr = torch.as_tensor(root_rot, dtype=torch.float32, device=dev).reshape(1, 4).expand(E, -1).contiguous()
 
         foot_local = torch.tensor(foot_pos_local, dtype=torch.float32, device=dev).unsqueeze(0).expand(E, -1, -1)
 
         # Hard-pin the base every frame so physics / Jacobians see the fixed pose.
         self._teleport_base(rp, rr)
 
-        jpos = self.default_qpos.clone()
+        # Continue from the previous frame's solution (first frame: default pose).
+        jpos = self._warm_jpos.clone() if self._warm_jpos is not None else self.default_qpos.clone()
         jvel = torch.zeros_like(jpos)
         self._flush_state(jpos, jvel)
 
@@ -335,13 +397,22 @@ class QuadrupedRetargeter:
                 ctrl.set_command(target_pos_b, ee_quat=ee_quat_b)
 
                 leg_jpos = jpos[:, leg_ids]
-                leg_dof_ids = torch.tensor(leg_ids, device=dev, dtype=torch.long)
+                # PhysX jacobians of FLOATING-base articulations carry 6 leading
+                # base-DOF columns, so joint columns are offset by +6 (same
+                # convention as isaaclab/envs/mdp/actions/task_space_actions.py).
+                # Indexing with the raw joint ids would silently slice base-DOF
+                # columns and the wrong joints' columns.
+                jac_joint_ids = leg_ids if self.is_fixed_base else [i + 6 for i in leg_ids]
+                leg_dof_ids = torch.tensor(jac_joint_ids, device=dev, dtype=torch.long)
                 J = jacobian_full[:, body_idx, :, :][:, :, leg_dof_ids]
 
                 jpos[:, leg_ids] = ctrl.compute(ee_pos_b, ee_quat_b, J, leg_jpos)
 
-                lo = self.robot.data.soft_joint_pos_limits[:, leg_ids, 0]
-                hi = self.robot.data.soft_joint_pos_limits[:, leg_ids, 1]
+                # Clamp to the sign-consistent effective limits (knees pinned to
+                # their X-configuration branch; other joints keep the URDF soft
+                # limits). Prevents the outward-knee branch flip / angle wrap.
+                lo = self.eff_lo[:, leg_ids]
+                hi = self.eff_hi[:, leg_ids]
                 jpos[:, leg_ids] = torch.clamp(jpos[:, leg_ids], lo, hi)
 
             self._teleport_base(rp, rr)
@@ -349,8 +420,8 @@ class QuadrupedRetargeter:
 
         self.robot.update(self.physics_dt)
 
-        print(f"[INFO] Finished Solving Frame")
-        
+        self._warm_jpos = jpos.clone()
+
         return (
             jpos[0].detach().cpu().numpy().astype(np.float32),
             self.robot.data.joint_vel[0].detach().cpu().numpy().astype(np.float32),

@@ -1685,7 +1685,7 @@ Improvements
 * Adds the ability to resume training from a checkpoint with rl_games by @sizsJEon
 * Adds windows configuration to VS code tasks by @johnBuffer
 * Adapts A and D button bindings in the keyboard device by @zoctipus
-* Uses ``torch.einsum`` for  quat_rotate and quat_rotate_inverse operations by @dxyy1
+* Uses ``torch.einsum`` for  quat_rotate and quat_apply_inverse operations by @dxyy1
 * Expands on articulation test for multiple instances and devices by @jsmith-bdai
 * Adds setting of environment seed at initialization by @Mayankm96
 * Disables default viewport when headless but cameras are enabled by @kellyguo11
