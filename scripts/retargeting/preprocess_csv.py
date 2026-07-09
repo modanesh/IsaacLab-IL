@@ -1,5 +1,5 @@
 """
-preprocess_csv.py — Convert a video-keypoint CSV (DLC + depth) to a
+preprocess_csv.py Convert a video-keypoint CSV (DLC + depth) to a
 retargeting-ready .npz
 
 Coordinate convention
@@ -11,7 +11,7 @@ right-handed CAMERA/IMAGE frame:
     x_src: image x, pixels, positive right
     y_src: image y, pixels, positive DOWN
     z_src: root-relative depth offset, positive AWAY from the camera
-           (uncalibrated units derived from disparity — much smaller in
+           (uncalibrated units derived from disparity much smaller in
            magnitude than the pixel axes; see get_depth.py)
 
 IsaacLab uses a z-up right-handed frame (x, y, z)_iso. We convert with a
@@ -105,7 +105,7 @@ def parse_keypoint_csv(csv_path: str) -> dict[str, np.ndarray]:
     header_fields = lines[1].strip().split(",")
 
     # Build a nested lookup: col_map[part][field] -> column index in `raw`.
-    # The two header rows are "wide" — each part name spans multiple columns
+    # The two header rows are "wide" each part name spans multiple columns
     # (one per field: x, y, z, likelihood). Zipping them gives us the
     # (part, field) pair for each column position, which we invert into a
     # dict-of-dicts so downstream code can do col_map["front_left_paw"]["x"]

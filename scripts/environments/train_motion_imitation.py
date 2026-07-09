@@ -60,7 +60,7 @@ parser.add_argument("--task", type=str, default="Isaac-Velocity-Flat-Anymal-D-v0
 parser.add_argument("--motion", type=str, default=None,
                     help="single retargeted .npz (bc/rl/eval, or single-clip amp)")
 parser.add_argument("--motion-list", type=str, default=None,
-                    help="text file of .npz paths (one per line) — AMP trains on the whole "
+                    help="text file of .npz paths (one per line) AMP trains on the whole "
                          "library (the discriminator samples transitions from all clips). "
                          "Required for multi-clip AMP; for bc/rl the first clip is used.")
 parser.add_argument("--mode", type=str, default="bc", choices=["bc", "rl", "amp", "eval"],
@@ -77,7 +77,7 @@ parser.add_argument("--bc_lr", type=float, default=3e-4)
 parser.add_argument("--bc_collect_s", type=float, default=60.0,
                     help="Seconds of motion to collect per env for BC dataset.")
 
-# AMP args (Adversarial Motion Prior — pure imitation, learned style reward)
+# AMP args (Adversarial Motion Prior pure imitation, learned style reward)
 parser.add_argument("--amp_iters", type=int, default=3000)
 parser.add_argument("--amp_steps", type=int, default=24, help="PPO rollout horizon for AMP.")
 parser.add_argument("--amp_lr", type=float, default=1e-4, help="Policy/value learning rate.")
@@ -106,7 +106,7 @@ parser.add_argument("--amp_window", type=int, default=2,
 parser.add_argument("--amp_task_vel_w", type=float, default=0.0,
                     help="Weight of a positive velocity-command TASK reward added to the AMP "
                          "style reward (0=pure imitation). Specifies the GOAL (go at commanded "
-                         "speed/heading), NOT the gait — the gait stays learned from video. "
+                         "speed/heading), NOT the gait the gait stays learned from video. "
                          "Needed for a COMMANDABLE forward walker. Try 0.5-1.0.")
 
 # RL args
@@ -177,7 +177,7 @@ parser.add_argument("--task-reward-weight", type=float, default=0.0,
 parser.add_argument("--phase-obs", action="store_true", default=False,
                     help="Append [sin, cos] of the gait phase to the observation (obs 48->50). "
                          "The reference action is a function of clip phase, which pure "
-                         "proprioception cannot disambiguate — strongly recommended for both "
+                         "proprioception cannot disambiguate strongly recommended for both "
                          "BC and RL. Must be consistent between BC and RL warm-start; eval "
                          "auto-detects it from the checkpoint.")
 
@@ -223,16 +223,16 @@ ACTION_SCALE = 0.5
 # --- Knee X-configuration hard clamp -------------------------------------------
 # ANYmal-D front knees (KFE) must bend NEGATIVE, hind POSITIVE. With a low/zero
 # joint-tracking weight the RL policy has nothing holding the knee branch, so it
-# can drive a knee to the wrong (outward) branch — physically wrong and unstable
+# can drive a knee to the wrong (outward) branch physically wrong and unstable
 # (the front-right-knee-bends-outward failure). The IK retargeter clamps this in
 # helpers.py; the policy had no equivalent. We clamp the KFE *action* so the
-# commanded target cannot cross the branch boundary — a hard guarantee, reward-
+# commanded target cannot cross the branch boundary a hard guarantee, reward-
 # independent. Joint order (Isaac BFS): KFE = idx 8(LF),9(LH),10(RF),11(RH);
 # default KFE front -0.8 / hind +0.8; target = default + ACTION_SCALE*action.
 ACTION_CLAMP = 6.0         # |action| bound: keeps joint targets within ~+-3 rad of default
 KNEE_EPS = 0.05
-KFE_FRONT_IDX = [8, 10]    # LF_KFE, RF_KFE — target must stay <= -KNEE_EPS
-KFE_HIND_IDX = [9, 11]     # LH_KFE, RH_KFE — target must stay >= +KNEE_EPS
+KFE_FRONT_IDX = [8, 10]    # LF_KFE, RF_KFE target must stay <= -KNEE_EPS
+KFE_HIND_IDX = [9, 11]     # LH_KFE, RH_KFE target must stay >= +KNEE_EPS
 _KFE_FRONT_ACT_MAX = (-KNEE_EPS - (-0.8)) / ACTION_SCALE   # = 1.5 at scale 0.5
 _KFE_HIND_ACT_MIN = (KNEE_EPS - 0.8) / ACTION_SCALE        # = -1.5 at scale 0.5
 
@@ -243,7 +243,7 @@ def clamp_knee_actions(acts):
     The +-ACTION_CLAMP bound is a stability failsafe: without it a single
     destabilising PPO update can drive actions to absurd values (~470 was observed),
     which makes the action-rate penalty ~ -44000/step, collapses the return to -2e5,
-    and diverges the value function (vf -> 1e23) — a catastrophic blow-up after an
+    and diverges the value function (vf -> 1e23) a catastrophic blow-up after an
     otherwise excellent run. Bounding the action keeps targets sane and the reward
     finite so training stays recoverable."""
     acts = acts.clone().clamp(-ACTION_CLAMP, ACTION_CLAMP)
@@ -256,7 +256,7 @@ def _clip_joint_pos_isaac(data) -> np.ndarray:
     """Absolute Isaac-order joint positions (T, 12) from a motion clip npz.
 
     Preferred path (IsaacLab-native): the 'joint_pos_isaac' key exported by
-    retarget.py — already absolute joint angles in articulation order, used
+    retarget.py already absolute joint angles in articulation order, used
     as-is (no permutation, no sign flips, no re-centring).
 
     Legacy fallback: the training-format 'joint_pos' key (PyBullet order,
@@ -304,7 +304,7 @@ def load_motion_interpolated(npz_path: str) -> dict:
     cs = CubicSpline(t_frames, joint_pos_looped, axis=0, bc_type='periodic')
 
     # 3b. DeepMimic targets: body-frame foot positions + root (fore-aft/lateral
-    #     velocity, base height), splined the same periodic way. Optional — a clip
+    #     velocity, base height), splined the same periodic way. Optional a clip
     #     may predate foot_pos_local / recover_root_translation.py, in which case
     #     the RL tracker falls back to joint-only tracking for the missing term(s).
     clip_extra = {}
@@ -507,7 +507,7 @@ def init_joints_to_motion(env, clip: dict, phase_t_arr: np.ndarray, device: str,
     """Initialize envs' joints to their respective motion phases.
 
     env_ids: indices of the envs to (re)initialize; None = all envs.
-    IMPORTANT: pass only the envs that actually reset — writing all envs on
+    IMPORTANT: pass only the envs that actually reset writing all envs on
     every individual reset teleports the *surviving* envs back onto the
     reference pose, erasing their accumulated state and corrupting both the
     BC dataset and the RL rollouts.
@@ -540,7 +540,7 @@ def reset_envs_to_reference(env, clip: dict, phase_t_arr: np.ndarray, device: st
     """Full DeepMimic-style RSI reset for the given envs: set joints AND the base
     (height + reference forward/lateral velocity) to the clip at each env's phase.
 
-    Unlike init_joints_to_motion (joints only — see its TODO), this also reseats
+    Unlike init_joints_to_motion (joints only see its TODO), this also reseats
     the base, which is REQUIRED for the DeepMimic early-termination path: an env
     terminated for drifting off-reference did NOT fall, so the env's own autoreset
     never fired and its base would otherwise stay in the drifted (tilted/low)
@@ -644,7 +644,7 @@ def collect_bc_data(env, clip: dict, device: str, collect_s: float = 60.0,
     print(f"[BC collect] terminations: {n_resets}  |  mean episode length ≈ {mean_ep_s:.1f}s "
           f"(clip is {clip['duration']:.1f}s)")
     if mean_ep_s < 2.0:
-        print("[BC collect] WARNING: open-loop replay falls almost immediately — the dataset "
+        print("[BC collect] WARNING: open-loop replay falls almost immediately the dataset "
               "is dominated by falling states with feedforward labels. BC cannot work on "
               "this; the clip/gains need fixing or go straight to RL fine-tuning.")
     print(f"[BC collect] Done. Dataset: {obs_buf.shape}")
@@ -831,7 +831,7 @@ def deepmimic_reward(q, q_ref, foot_local, foot_ref, root_now, root_ref,
 # tell apart short state-transitions sampled from the reference clip ("real")
 # from transitions produced by the policy ("fake"); the policy's reward is how
 # "real" its transitions look to the discriminator. There is no phase, no
-# velocity-command term, no survival bonus to game — the only objective is
+# velocity-command term, no survival bonus to game the only objective is
 # "move like the reference data" (Peng et al. 2021, "AMP").
 #
 # AMP features are a per-frame state descriptor computed IDENTICALLY from the
@@ -848,7 +848,7 @@ def deepmimic_reward(q, q_ref, foot_local, foot_ref, root_now, root_ref,
 #      smoothed finite-difference; the sim's is noisy instantaneous velocity, a
 #      free tell. The implicit pos_t -> pos_t+1 delta is the same for both.
 # - foot_pos_local is each foot expressed in the BASE frame, so its z component
-#   already encodes how high the body sits above its feet — a sit/crouch shows
+#   already encodes how high the body sits above its feet a sit/crouch shows
 #   up here consistently in both reference and sim, with no absolute-frame
 #   convention to mismatch.
 # - Absolute root height is deliberately EXCLUDED: it is a zero-variance
@@ -864,7 +864,7 @@ def deepmimic_reward(q, q_ref, foot_local, foot_ref, root_now, root_ref,
 AMP_FOOT_BODIES = ["LF_FOOT", "RF_FOOT", "LH_FOOT", "RH_FOOT"]
 # joint_pos(12) + foot_pos_local(12) + root_lin_vel_body(3). The root linear
 # velocity (recovered into the references by recover_root_translation.py) makes
-# FORWARD MOTION part of the style the discriminator rewards — so walking forward
+# FORWARD MOTION part of the style the discriminator rewards so walking forward
 # becomes the high-reward behaviour instead of in-place stepping / crouching.
 # Constant components (e.g. lateral/vertical root vel ~0) are dropped by keep_mask.
 AMP_FEAT_DIM = 12 + 12 + 3  # = 27
@@ -1012,7 +1012,7 @@ def build_reference_amp_multi(clips: list[dict], device: str, control_dt: float,
     and normalization. Each window is `window` consecutive frames; with window=2
     this is the usual (s,s') transition. A longer window lets the discriminator
     see MOTION OVER TIME, so a standing-still policy (K near-identical frames) is
-    obviously fake against reference windows that all contain stepping — this is
+    obviously fake against reference windows that all contain stepping this is
     what stops the "smooth standing" degenerate solution of pure-imitation AMP.
 
     Each clip wraps within ITSELF (loop), never across clips (no fake A->B seam).
@@ -1214,7 +1214,7 @@ def train_ppo(env, clip: dict, policy: MLP, value_net: ValueNet,
                 ep_return += reward
                 ep_len += 1
 
-                # Handle resets — only the terminated envs
+                # Handle resets only the terminated envs
                 reset_mask = done.bool().cpu().numpy()
                 if reset_mask.any():
                     phase_t[reset_mask] = np.random.uniform(
@@ -1239,7 +1239,7 @@ def train_ppo(env, clip: dict, policy: MLP, value_net: ValueNet,
             adv, ret = buf.compute_returns(last_val)
             # Stability failsafes (no-ops in the normal range): bound the value targets
             # so a reward/value outlier can't explode the value loss (vf was seen hitting
-            # 1e23) — the cause of the training collapses we hit at high env counts.
+            # 1e23) the cause of the training collapses we hit at high env counts.
             adv = torch.nan_to_num(adv, nan=0.0, posinf=0.0, neginf=0.0)
             ret = torch.nan_to_num(ret, nan=0.0, posinf=0.0, neginf=0.0).clamp(-50.0, 500.0)
 
@@ -1278,7 +1278,7 @@ def train_ppo(env, clip: dict, policy: MLP, value_net: ValueNet,
 
                 loss = pg_loss + vf_coef * vf_loss - entropy_coef * ent
                 if not torch.isfinite(loss):
-                    # A rare spike still slipped through — skip this step rather than
+                    # A rare spike still slipped through skip this step rather than
                     # let NaN/Inf gradients poison the weights (which kills all future
                     # forwards). Training continues from the last good weights.
                     continue
@@ -1359,7 +1359,7 @@ def train_ppo(env, clip: dict, policy: MLP, value_net: ValueNet,
 
 
 def _disc_grad_penalty(disc: Discriminator, real: torch.Tensor) -> torch.Tensor:
-    """E[ ||grad_x D(x)||^2 ] on real samples — stabilises adversarial training."""
+    """E[ ||grad_x D(x)||^2 ] on real samples stabilises adversarial training."""
     real = real.detach().clone().requires_grad_(True)
     d = disc(real)
     grad = torch.autograd.grad(d.sum(), real, create_graph=True)[0]
@@ -1482,7 +1482,7 @@ def train_amp(env, clips: "list[dict] | dict", policy: MLP, value_net: ValueNet,
 
                 # Optional velocity-command TASK reward (positive, in [0,1]). This
                 # is the only hand-specified term and it specifies a GOAL (go at the
-                # commanded speed/heading), NOT a gait — the gait still comes purely
+                # commanded speed/heading), NOT a gait the gait still comes purely
                 # from the style discriminator. The discriminator is root-motion-
                 # blind (body-frame features), so translating forward does NOT fight
                 # the style reward. obs layout: lin_vel0:3, ang_vel3:6, grav6:9, cmd9:12.
@@ -1585,7 +1585,7 @@ def train_amp(env, clips: "list[dict] | dict", policy: MLP, value_net: ValueNet,
 
         mean_return = np.mean(ep_returns) if ep_returns else 0.0
         mean_len = np.mean(ep_lengths) if ep_lengths else 0.0
-        # Per-step style reward this rollout — the metric that actually says
+        # Per-step style reward this rollout the metric that actually says
         # whether the discriminator is giving the policy a usable signal.
         # (Sign accuracy being ~1.0 is normal for a healthy LSGAN and does NOT
         # mean the reward has vanished.)
@@ -2014,7 +2014,7 @@ def main():
                 print(f"[Eval] motion read from train_config.yaml: {tmotion}")
         if args_cli.motion is None:
             print("[Eval] WARNING: no train_config.yaml (or no motion in it) next to the ckpt; "
-                  "falling back to the default clip — fidelity numbers may be meaningless.")
+                  "falling back to the default clip fidelity numbers may be meaningless.")
 
     motion_paths = _resolve_motion_paths()
     if args_cli.motion is None:
@@ -2191,7 +2191,7 @@ def main():
         is_rl = "policy" in ck
         sd = ck.get("policy") or ck.get("state_dict")
         # Auto-detect whether the checkpoint was trained with the phase clock
-        # from its input-layer width — no flag matching needed.
+        # from its input-layer width no flag matching needed.
         ckpt_obs_dim = sd["net.0.weight"].shape[1]
         use_phase = ckpt_obs_dim == OBS_DIM + 2
         policy = MLP(ckpt_obs_dim, ACTION_DIM, stochastic=is_rl)

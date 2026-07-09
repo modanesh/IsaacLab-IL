@@ -1,79 +1,59 @@
-# 🤖 IsaacLab-IL — Motion Imitation for ANYmal-D
+# 🤖 IsaacLab-IL: Motion Imitation for ANYmal-D
 
 This is a **customized [Isaac Lab](https://github.com/isaac-sim/IsaacLab) fork** for the
 [**CopyQuad**](https://github.com/modanesh/CopyQuad) project. It holds the second half of
 the pipeline: turning a lifted 3D reference into an ANYmal-D policy that reproduces the
 animal's gait.
 
-> 📥 The 3D keypoint CSV that feeds step ③ comes from the top-level
-> [CopyQuad](https://github.com/modanesh/CopyQuad) repo (DeepLabCut → Video-Depth-Anything).
+> 📥 The 3D keypoint CSV that feeds step 3 comes from the top-level
+> [CopyQuad](https://github.com/modanesh/CopyQuad) repo (DeepLabCut -> Video-Depth-Anything).
 > This fork ships as its `IsaacLab/` submodule.
 
 ```
  📄 3D keypoint CSV  (from CopyQuad)
-      │  ③  scripts/retargeting/preprocess_csv.py        →  cleaned reference skeleton (.npz)
-      │  ④  scripts/retargeting/retarget.py              →  ANYmal-D joint trajectory
-      │  ⑤  scripts/environments/data/recover_root_translation.py →  global body motion
-      │  ⑥  scripts/environments/train_motion_imitation.py        →  tracking policy
-      ▼
+      │  3-  scripts/retargeting/preprocess_csv.py                   ->  cleaned reference skeleton (.npz)
+      │  4-  scripts/retargeting/retarget.py                         ->  ANYmal-D joint trajectory
+      │  5-  scripts/environments/data/recover_root_translation.py   ->  global body motion
+      │  6-  scripts/environments/train_motion_imitation.py          ->  tracking policy
  🤖 ANYmal-D policy
-```
-
----
-
-## ⚙️ Setup
-
-Runs inside the CopyQuad project's single venv (Isaac Lab + Isaac Sim installed there).
-Isaac needs its `omni.*` packages on `PYTHONPATH`, but a sourced ROS environment breaks it,
-so **strip ROS** before every command in this repo:
-
-```bash
-export PYTHONPATH=$(echo "$PYTHONPATH" | tr ':' '\n' | grep -vi ros/noetic | paste -sd:)
 ```
 
 ---
 
 ## 🚀 Pipeline
 
-### ③ 🧹 Preprocess — CSV → reference skeleton
+### 3- 🧹 Preprocess - CSV to reference skeleton
 ```bash
-python scripts/retargeting/preprocess_csv.py \
-    --csv <clip>_with_depth_npz.csv \
-    --output scripts/environments/data/motions/_refs/<clip>_ref.npz --fps <fps>
+python scripts/retargeting/preprocess_csv.py --csv <clip>_with_depth_npz.csv --output scripts/environments/data/motions/_refs/<clip>_ref.npz --fps <fps>
 ```
-Confidence-weighted keypoint smoothing, camera→robot transform, hip regularization.
+Confidence-weighted keypoint smoothing, camera to robot transform, hip regularization.
 
-### ④ 🦿 Retarget — anisotropy-aware IK to ANYmal-D
+### 4- 🦿 Retarget - anisotropy-aware IK to ANYmal-D
 ```bash
-python scripts/retargeting/retarget.py \
-    --ref-motion scripts/environments/data/motions/_refs/<clip>_ref.npz \
-    --output scripts/environments/data/motions/<clip>.npz --fps <fps> --lateral-mode pin
+python scripts/retargeting/retarget.py --ref-motion scripts/environments/data/motions/_refs/<clip>_ref.npz --output scripts/environments/data/motions/<clip>.npz --fps <fps> --lateral-mode pin
 ```
 Monocular depth is *anisotropically* noisy, so the lateral axis is **pinned** while the
 clean image-plane axes drive the IK, plus a knee-branch constraint and hip regularization.
 `--synth-bow` synthesizes the non-locomotion bow; `--collect-z/--collect-x` shrink an
 over-athletic reference into the robot's reachable envelope.
 
-### ⑤ 🧭 Recover global root translation
+### 5- 🧭 Recover global root translation
 ```bash
-python scripts/environments/data/recover_root_translation.py \
-    --motion scripts/environments/data/motions/<clip>.npz
+python scripts/environments/data/recover_root_translation.py --motion scripts/environments/data/motions/<clip>.npz
 ```
 Fixed-base IK discards world translation; this restores it from stance-foot cadence & stride.
 
-> 🎚️ **Optional — clip conditioning.** `scripts/retargeting/polish_motion.py` smooths joints
+>️ **Optional for clip conditioning.** `scripts/retargeting/polish_motion.py` smooths joints
 > and reshapes amplitude in *joint space* to fit ANYmal's actuator limits (used for the
 > greyhound gallop). Slow-motion removal lives in the CopyQuad repo's `scripts/`.
 
-### ⑥ 🎯 Train — phase-indexed DeepMimic policy
+### 6- 🎯 Train - phase-indexed DeepMimic policy
 ```bash
-python scripts/environments/train_motion_imitation.py \
-    --motion scripts/environments/data/motions/<clip>.npz \
-    --mode rl --phase-obs --num_envs 512 --rl_iters 4000 --headless
+python scripts/environments/train_motion_imitation.py --motion scripts/environments/data/motions/<clip>.npz --mode rl --phase-obs --num_envs 512 --rl_iters 4000 --headless
 ```
-- `--mode rl` — 🎯 phase-indexed DeepMimic tracking (PPO). **This is the main mode.**
-- `--mode eval --ckpt <...>/model.pt` — 📊 evaluate a saved policy (tracking reward, forward speed, survival, footfall).
-- `--mode bc` — a supervised behavioral-cloning warm-start (legacy).
+- `--mode rl`: 🎯 phase-indexed DeepMimic tracking (PPO). **This is the main mode.**
+- `--mode eval --ckpt <...>/model.pt`: 📊 evaluate a saved policy (tracking reward, forward speed, survival, footfall).
+- `--mode bc`: a supervised behavioral-cloning warm-start (legacy).
 
 Key reward knobs: `--rl_root_w` (forward-speed demand), `--rl_foot_z_weight` (clearance),
 `--rl_joint_w`, `--rl_sigma`, `--rl_action_rate_w`. Checkpoints land in
@@ -84,12 +64,11 @@ Key reward knobs: `--rl_root_w` (forward-speed demand), `--rl_foot_z_weight` (cl
 ## 🎥 Playback
 
 ```bash
-python scripts/environments/anymal_motion_playback.py \
-    --motion scripts/environments/data/motions/greyhound_gallop.npz
+python scripts/environments/anymal_motion_playback.py --motion scripts/environments/data/motions/greyhound_gallop.npz
 ```
-- 🟢 default **kinematic** (base pinned, joints written directly — retarget ground truth)
-- 🔵 `--physics` (free base + gravity + PD targets — dynamic feasibility)
-- 📸 `--hold-frame N` (freeze one frame, feet grounded — for figures)
+- 🟢 default **kinematic** (base pinned, joints written directly, retarget ground truth)
+- 🔵 `--physics` (free base + gravity + PD targets, dynamic feasibility)
+- 📸 `--hold-frame N` (freeze one frame, feet grounded, for figures)
 
 ---
 

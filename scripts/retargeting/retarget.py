@@ -34,7 +34,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Lateral (body-frame y) foot targets. 'pin' (default) replaces the "
             "depth-derived lateral coordinate with a constant +-stance_width/2 "
-            "per foot — for a straight walk the monocular-depth lateral signal "
+            "per foot for a straight walk the monocular-depth lateral signal "
             "is mostly noise (same magnitude as the true separation) and after "
             "scaling it swings foot targets across the body midline. "
             "'raw' keeps the depth-derived lateral motion."
@@ -55,7 +55,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--posture-height", type=float, default=0.40,
                    help="Lowered base height (m) for posture mode (default 0.40 vs the 0.5 stand).")
     p.add_argument("--posture-reach", type=float, default=0.50,
-                   help="Clamp each posture foot target to within this radius (m) of the base — "
+                   help="Clamp each posture foot target to within this radius (m) of the base "
                         "the bunched-sit front legs track noisily and over-reach the workspace.")
     p.add_argument("--posture-front-stretch", type=float, default=0.0,
                    help="Bow only: extend the FRONT feet forward (m, at full bow) and lower them to "
@@ -114,7 +114,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "that IK otherwise turns into joint-velocity spikes.")
     p.add_argument("--snap-z", type=float, default=0.0,
                    help="snap foot-target z within this margin [m] above the per-foot stance "
-                        "level down onto it (after collection) — consolidates chattery contacts.")
+                        "level down onto it (after collection) consolidates chattery contacts.")
     return p
 
 
@@ -276,13 +276,13 @@ def build_scaled_targets(root_pos: np.ndarray,
     relative to the dog's body even when the robot base is pinned.
 
     lateral_mode:
-        "pin" — body-frame y of each foot target is a constant
+        "pin" body-frame y of each foot target is a constant
                 +-stance_width/2 (FL,BL: +y / FR,BR: -y). The fore-aft (x)
                 and vertical (z) gait signal comes from clean pixel axes;
                 the lateral axis comes from monocular depth whose noise is
                 comparable to the true left-right separation (~2 sigma), so
                 after scaling it swings targets across the body midline.
-        "raw" — keep the depth-derived lateral motion (scaled).
+        "raw" keep the depth-derived lateral motion (scaled).
     """
     root_rot = ensure_quaternion_continuity(root_rot)
 
@@ -581,7 +581,7 @@ def run_targeting(args) -> None:
                 rate = frames_done / elapsed
                 print(f"  frame {frames_done:5d}/{T} | {rate:.1f} frames/s")
     except KeyboardInterrupt:
-        print(f"\n[Retarget] Interrupted at frame {frames_done}/{T} — saving the frames solved so far.")
+        print(f"\n[Retarget] Interrupted at frame {frames_done}/{T} saving the frames solved so far.")
     finally:
         if skeleton_plotter is not None:
             skeleton_plotter.close()
@@ -661,7 +661,7 @@ if __name__ == "__main__":
         code = 1
     # NOTE: we deliberately do NOT call simulation_app.close() here. Isaac Sim's
     # app teardown HANGS the interpreter (close() never returns) *after* the
-    # trajectory npz is already written inside run_targeting — that hang is
+    # trajectory npz is already written inside run_targeting that hang is
     # exactly what blocks a batch driver waiting on this process. The output is
     # fully saved and the OS reclaims the GPU/file handles on exit, so a graceful
     # close buys nothing. Flush and force-terminate with the real exit code so

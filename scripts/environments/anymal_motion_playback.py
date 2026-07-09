@@ -1,30 +1,30 @@
-"""anymal_motion_playback.py — playback of a motion clip on the ANYmal-D.
+"""anymal_motion_playback.py playback of a motion clip on the ANYmal-D.
 
 Two modes:
 
-KINEMATIC (default) — base pinned, joint states written directly every step;
+KINEMATIC (default) base pinned, joint states written directly every step;
 physics used only for rendering. Nothing is filtered, scaled or PD-tracked, so
 what you see is EXACTLY what is stored in the clip. This is the ground truth for
 verifying the *retarget geometry* (do the legs trace the right gait?).
 
-PHYSICS (--physics) — base is FREE (gravity + ground contact on); the clip joint
+PHYSICS (--physics) base is FREE (gravity + ground contact on); the clip joint
 angles are fed as PD position *targets* through the ANYmal-D actuator model, and
 the base moves however the dynamics dictate. This answers a different question:
-is the motion dynamically FEASIBLE — would the robot actually stay upright
+is the motion dynamically FEASIBLE would the robot actually stay upright
 executing it, or does it topple? Falls are detected (base height / tilt) and
 reported per loop, and the robot re-initializes each loop so you can watch
 repeatedly. Use this to triage clips that look fine kinematically but are
 dynamically broken (discard or fix them before BC/RL).
 
 Note: the retargeted clips have ~zero root translation (base was pinned during
-retargeting), so in physics mode the robot steps roughly in place — a fall here
+retargeting), so in physics mode the robot steps roughly in place a fall here
 means the in-place gait itself is unstable, which is exactly what we want to
 catch. It is open-loop reference tracking, NOT a trained policy.
 
 Supported clip formats (auto-detected):
   - retarget.py output:  uses 'joint_pos_isaac' (absolute, Isaac order)
   - training format:     'joint_pos' (PyBullet order, residuals around the
-                         default pose, SIGN_FLIP applied) — reconstructed via
+                         default pose, SIGN_FLIP applied) reconstructed via
                          q = joint_pos[PYB_TO_ISAAC] * SIGN_FLIP + default
 
 Usage:
@@ -196,7 +196,7 @@ def run_hold(sim, sim_cfg, scene, robot, q_clip_t, frame_idx, device):
     # side profile (+x is forward / to the right, matching a horse walking right)
     sim.set_camera_view(eye=[0.05, -3.0, 0.9], target=[0.0, 0.0, 0.45])
     print(f"[Hold] holding frame {fi}/{T - 1} at base height {h:.2f} m. "
-          f"Position the camera in the viewport and screenshot — close the window to stop.")
+          f"Position the camera in the viewport and screenshot. Close the window to stop.")
     while simulation_app.is_running():
         robot.write_root_pose_to_sim(root_pose)
         robot.write_root_velocity_to_sim(zero6)
@@ -209,7 +209,7 @@ def run_hold(sim, sim_cfg, scene, robot, q_clip_t, frame_idx, device):
 
 def run_kinematic(sim, sim_cfg, scene, robot, interp, root_pose_t, zero_vel6, zero_vel12, T):
     sim_time = 0.0
-    print(f"[Playback] KINEMATIC: looping at {args_cli.speed:.2f}x — close the window to stop.")
+    print(f"[Playback] KINEMATIC: looping at {args_cli.speed:.2f}x. Close the window to stop.")
     while simulation_app.is_running():
         q, i0, i1 = interp(sim_time)
         robot.write_root_pose_to_sim(root_pose_t[i0].unsqueeze(0))
@@ -264,7 +264,7 @@ def run_physics(sim, sim_cfg, scene, robot, interp, root_pose_t, zero_vel12, T, 
     # Init height from the robot's ACTUAL foot geometry at the start pose. The
     # earlier fixed guess (clip root 0.5 + 0.03) put the feet ~5 cm UNDERGROUND
     # (feet sit ~0.58 m below the base), so PhysX launched the robot on frame 0
-    # and every clip "fell" instantly — a setup bug, not a bad motion.
+    # and every clip "fell" instantly a setup bug, not a bad motion.
     init_h = _ground_robot_height(sim, sim_cfg, scene, robot, q0, zero12, device)
 
     def reset_robot():
@@ -302,9 +302,9 @@ def run_physics(sim, sim_cfg, scene, robot, interp, root_pose_t, zero_vel12, T, 
     h_s, gz_s = settle(0.5)
     print(f"[Playback] settled at start pose: height {h_s:.2f} m, tilt gz {gz_s:+.2f} "
           f"{'(stable)' if (h_s>=args_cli.fall_height and gz_s<=-args_cli.fall_tilt) else '(ALREADY UNSTABLE at rest!)'}")
-    print(f"[Playback] NOTE: open-loop tracking has NO balance feedback — even a perfect gait "
+    print(f"[Playback] NOTE: open-loop tracking has NO balance feedback. Even a perfect gait "
           f"can topple here; this is a RELATIVE feasibility/longevity check, not a verdict.\n"
-          f"           Looping at {args_cli.speed:.2f}x — close the window to stop.")
+          f"           Looping at {args_cli.speed:.2f}x. Close the window to stop.")
 
     sim_time = 0.0
     fell = False

@@ -6,7 +6,7 @@ exact forward kinematics so joints and foot_pos_local stay consistent.
 Why joint space (not foot targets / retarget --collect): scaling a foot TARGET
 runs the inverse kinematics into ANYmal's reach wall (the knee snaps -> jerk, as
 the greyhound-gallop v3 rebuild showed). Scaling a JOINT can't violate reach —
-the foot simply follows FK wherever the leg reaches — and it directly shapes what
+the foot simply follows FK wherever the leg reaches and it directly shapes what
 you see and what the imitation reward tracks (joint_pos + foot_pos_local).
 
 Used to turn the collected greyhound gallop into a smooth, full hip-sweep gait:

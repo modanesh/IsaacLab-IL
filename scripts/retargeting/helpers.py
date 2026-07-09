@@ -57,8 +57,8 @@ class ReferenceMotion:
     root_lin_vel: np.ndarray | None
     root_ang_vel: np.ndarray | None
     dt: float
-    thigh_pos: np.ndarray | None = None  # (T,4,3) FL,FR,BL,BR — used by posture mode
-    torso_pitch: np.ndarray | None = None  # (T,) per-frame spine pitch (rad) — posture mode
+    thigh_pos: np.ndarray | None = None  # (T,4,3) FL,FR,BL,BR used by posture mode
+    torso_pitch: np.ndarray | None = None  # (T,) per-frame spine pitch (rad) posture mode
 
 
 def _normalize_quaternions_np(quats: np.ndarray) -> np.ndarray:
@@ -172,7 +172,7 @@ def load_reference_motion(path: str, fps: float) -> ReferenceMotion:
     if root_ang_vel is None:
         root_ang_vel = _quat_to_angular_velocity(root_rot, dt)
 
-    print(f"[Loader] Loaded '{p.name}' — {T} frames @ {fps} Hz ({T / fps:.1f} s).")
+    print(f"[Loader] Loaded '{p.name}' {T} frames @ {fps} Hz ({T / fps:.1f} s).")
     return ReferenceMotion(
         root_pos=root_pos,
         root_rot=root_rot,
@@ -282,7 +282,7 @@ class QuadrupedRetargeter:
         # A 2-link leg has TWO IK solutions for any reachable foot position
         # (knee bent one way or the other). The ANYmal-D's URDF KFE soft limits
         # are absurdly wide (~+-8.95 rad = +-512 deg), so the DLS solver is free
-        # to slip into the WRONG (outward) branch — or wrap the angle past +-pi —
+        # to slip into the WRONG (outward) branch or wrap the angle past +-pi —
         # whenever the foot target is noisy. The warm start then carries that bad
         # branch forward for the rest of the clip. This was seen on the low-res
         # tigdog clips: front KFE ran to -4.5 rad (wrapped) / +2.3 rad (flipped)

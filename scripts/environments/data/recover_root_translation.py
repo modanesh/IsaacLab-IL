@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""recover_root_translation.py — put forward motion back into the references.
+"""recover_root_translation.py  put forward motion back into the references.
 
 retarget.py pins the base, so every clip is "in place": root_pos constant, root
 velocity ~0. AMP/RL then has no reference forward motion to reward and the policy
@@ -8,21 +8,21 @@ settles into in-place stepping. The forward speed is recoverable from the feet.
 THE OLD METHOD (--legacy) estimated a per-frame body velocity as
     v_body(t) = - mean_over_stance_feet( d/dt foot_pos_local_xy )
 with a loose stance threshold (any foot within 3 cm of its own minimum). That let
-SWING feet — which move FORWARD in the body frame — leak into the average, which
+SWING feet  which move FORWARD in the body frame  leak into the average, which
 diluted the speed on clean clips (dog: stands still at times) and REVERSED it on
 others (dlc_horse_007: recovered -0.04 m/s while the feet imply +0.3 forward). That
 broken per-frame signal is why playback bases wobble / stall despite a steady video.
 
 THE FIX (default, "steady"): the video walks are steady fixed-speed, and the feet
 (faithfully retargeted) pin the speed two robust ways:
-  • stride x cadence  — stride = median foot fore-aft sweep (m/cycle); cadence =
+  • stride x cadence   stride = median foot fore-aft sweep (m/cycle); cadence =
     footfalls/sec (counted, robust for few cycles). Validated: dog1_slow 0.29,
-    dog1 0.40 — matching the known trained speeds (0.30 / 0.43).
-  • median-over-feet  — at each frame the >=2-3 planted feet share one backward
+    dog1 0.40  matching the known trained speeds (0.30 / 0.43).
+  • median-over-feet   at each frame the >=2-3 planted feet share one backward
     velocity while the swing foot moves forward, so the per-frame MEDIAN over the 4
     feet = -v (rejects swing contamination). Used as a fallback when the clip is too
     short (<2 gait cycles) for a reliable cadence.
-We take a single robust forward speed v and write a CONSTANT v (vy=0) — a steady
+We take a single robust forward speed v and write a CONSTANT v (vy=0)  a steady
 forward reference that matches the video, removing the per-frame stalls/reversals.
 
 Writes `root_lin_vel` (T,3 body frame; training reads [:, :2]) and `root_pos`
@@ -132,7 +132,7 @@ def leg_velocity_profile(fl: np.ndarray, dt: float) -> np.ndarray:
 def estimate_speed(fl: np.ndarray, dt: float, stem: str = None):
     """Per-frame forward-velocity PROFILE (T,). The SHAPE comes from the legs (non-slip,
     captures accel/decel, moves with the feet); the MAGNITUDE is the best of: stride x
-    cadence (validated when >=2 cycles), or — for a static-camera clip — the geometric
+    cadence (validated when >=2 cycles), or  for a static-camera clip  the geometric
     mean of the torso's video speed and the leg-sweep rate (reconciles 'how far the body
     actually went' with 'how fast the feet sweep' so the base never outruns the legs)."""
     T = fl.shape[0]
@@ -150,7 +150,7 @@ def estimate_speed(fl: np.ndarray, dt: float, stem: str = None):
     else:
         M, method = leg_mean, "leg-sweep"
     # Static-camera reconciliation: combine the torso's video distance with the non-slip
-    # leg rate (geometric mean) — pulls an over-read torso speed back toward what the legs
+    # leg rate (geometric mean)  pulls an over-read torso speed back toward what the legs
     # can actually support (kills the 'rushed' look) while honouring the video distance.
     if stem is not None:
         tr = trunk_speed_from_video(stem, fl, dt)
