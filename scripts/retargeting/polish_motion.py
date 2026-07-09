@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Joint-space polish for a retargeted motion: SMOOTH the jerk + optionally grow
 an under-swinging joint's amplitude, then recompute the feet through the robot's
 exact forward kinematics so joints and foot_pos_local stay consistent.

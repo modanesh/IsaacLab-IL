@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """recover_root_translation.py  put forward motion back into the references.
 
 retarget.py pins the base, so every clip is "in place": root_pos constant, root
