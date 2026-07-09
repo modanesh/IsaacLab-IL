@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Animate quadruped body motion from NPZ, with side-by-side raw vs. scaled view.
 
