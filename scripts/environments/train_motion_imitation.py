@@ -160,6 +160,26 @@ parser.add_argument("--rl_action_rate_w", type=float, default=0.0,
                          "(a real swing needs large smooth action changes; too high freezes "
                          "the legs).")
 
+# --- Launch-from-rest curriculum (for deployable standstill starts) --------------
+# A dynamic gait (the gallop) is normally reset already moving at the reference
+# speed, so the policy never learns to start from a standstill and collapses when
+# switched in on the robot. These envs instead reset at REST at a stable stance
+# phase, and a per-env ramp spins the gait up: the phase clock advances at
+# rate ramp*nominal and the reference velocity target is scaled by ramp, both
+# going 0->1 over --rl_launch_s. The deployment controller mirrors this ramp.
+parser.add_argument("--rl_launch_frac", type=float, default=0.0,
+                    help="Fraction of env resets that start from REST (zero velocity at the "
+                         "stance phase) and spin the gait up. 0 (default) = classic RSI only. "
+                         "Try 0.3-0.5 to teach a standstill launch while retaining the gait.")
+parser.add_argument("--rl_launch_s", type=float, default=1.5,
+                    help="Duration (s) of the launch ramp: phase rate and the reference "
+                         "velocity target ramp 0->1 over this window. Must match the "
+                         "deployment launch_ramp_s.")
+parser.add_argument("--rl_launch_phase", type=float, default=-1.0,
+                    help="Cycle fraction [0,1) to launch from (the stance the robot settles "
+                         "onto before spinning up). -1 (default) = auto: the most-grounded "
+                         "all-feet-down frame of the clip. Should match the deployment phase_start.")
+
 # Shared
 parser.add_argument("--ckpt", type=str, default=None,
                     help="Checkpoint to load for eval, or BC checkpoint to init RL from.")
@@ -1076,7 +1096,8 @@ def train_ppo(env, clip: dict, policy: MLP, value_net: ValueNet,
               joint_w: float = 0.5, foot_w: float = 0.3, root_w: float = 0.2,
               foot_sigma: float = 0.20, root_sigma: float = 0.25,
               term_joint: float = 2.0, term_foot: float = 0.5,
-              action_rate_w: float = 0.0, foot_z_weight: float = 1.0):
+              action_rate_w: float = 0.0, foot_z_weight: float = 1.0,
+              launch_frac: float = 0.0, launch_s: float = 1.5, launch_phase: float = -1.0):
     robot = env.unwrapped.scene["robot"]
     num_envs = env.unwrapped.num_envs
     sim_dt = getattr(env.unwrapped, "step_dt", 0.02)
@@ -1094,10 +1115,60 @@ def train_ppo(env, clip: dict, policy: MLP, value_net: ValueNet,
     cur_lr, desired_kl = lr, 0.01     # adaptive-LR state (rsl_rl-style trust region)
     buf = PPOBuffer(num_envs, horizon, pobs_dim, ACTION_DIM, device)
 
-    phase_t = np.random.uniform(0, clip["duration"], size=num_envs)
+    duration = clip["duration"]
+
+    # --- Launch-from-rest curriculum -----------------------------------------
+    # launch_ramp_t[i] = seconds since env i last did a REST reset; np.inf marks a
+    # classic RSI env (reset already moving). For a launch env the phase advances
+    # at ramp*sim_dt and the reference velocity target is scaled by ramp, both
+    # going 0->1 over launch_s, so the policy learns to spin the gait up from a
+    # standstill instead of only ever tracking a steady gallop. launch_frac=0
+    # (default) disables this and recovers the classic behaviour exactly.
+    launch_ramp_t = np.full(num_envs, np.inf)
+
+    def _auto_launch_phase():
+        """Cycle fraction of the most-grounded (all-feet-down) stance, from cs_foot."""
+        if "cs_foot" not in clip:
+            return 0.0
+        ts = np.linspace(0, duration, 200, endpoint=False)
+        z = np.asarray(clip["cs_foot"](ts)).reshape(len(ts), 4, 3)[:, :, 2]   # (200,4) foot heights
+        g = z.min()
+        ndown = (z < g + 0.05).sum(1)
+        spread = z.max(1) - z.min(1)
+        best = min(range(len(ts)), key=lambda i: (-int(ndown[i]), float(spread[i])))
+        return float(ts[best] / duration)
+
+    lp = (launch_phase % 1.0) if launch_phase >= 0.0 else (_auto_launch_phase() if launch_frac > 0.0 else 0.0)
+    launch_phase_t = lp * duration
+    if launch_frac > 0.0:
+        print(f"[PPO] launch-from-rest: frac={launch_frac}  ramp={launch_s}s  from phase {lp:.3f} ({launch_phase_t:.2f}s)")
+
+    def _smoothstep(x):
+        x = np.clip(x, 0.0, 1.0)
+        return x * x * (3.0 - 2.0 * x)
+
+    phase_t = np.random.uniform(0, duration, size=num_envs)
+
+    def _reset(ids):
+        """Reset the given envs. A launch_frac share start from REST at the stance
+        phase (ramp from 0); the rest use classic RSI (random phase + ref velocity)."""
+        ids = np.asarray(ids, dtype=np.int64)
+        if ids.size == 0:
+            return
+        is_launch = np.random.rand(ids.size) < launch_frac
+        normal, launch = ids[~is_launch], ids[is_launch]
+        if normal.size:
+            phase_t[normal] = np.random.uniform(0, duration, size=normal.size)
+            launch_ramp_t[normal] = np.inf
+            reset_envs_to_reference(env, clip, phase_t, device, env_ids=normal, seed_velocity=True)
+        if launch.size:
+            phase_t[launch] = launch_phase_t
+            launch_ramp_t[launch] = 0.0
+            reset_envs_to_reference(env, clip, phase_t, device, env_ids=launch, seed_velocity=False)
+
     obs, _ = env.reset()
     obs = obs["policy"]
-    reset_envs_to_reference(env, clip, phase_t, device)
+    _reset(np.arange(num_envs))
 
     best_mean_return = -float("inf")
     ep_returns = deque(maxlen=100)
@@ -1141,7 +1212,11 @@ def train_ppo(env, clip: dict, policy: MLP, value_net: ValueNet,
 
                 next_obs, _, terminated, truncated, _ = env.step(acts)
                 done = (terminated | truncated).float() #TODO: add more terminal conditions
-                phase_t += sim_dt
+                # Launch envs advance the phase clock at ramp*sim_dt (ramp 0->1 over
+                # launch_s); classic envs (launch_ramp_t = inf) advance at full rate.
+                ramp = np.where(np.isinf(launch_ramp_t), 1.0, _smoothstep(launch_ramp_t / launch_s))
+                phase_t += ramp * sim_dt
+                launch_ramp_t += sim_dt
 
                 # --- DeepMimic-style multi-term tracking reward ---
                 # joint angles + body-frame foot positions (clearance/stride) +
@@ -1163,8 +1238,11 @@ def train_ppo(env, clip: dict, policy: MLP, value_net: ValueNet,
                 if has_root:
                     root_now = torch.cat([robot.data.root_lin_vel_b[:, :2],
                                           robot.data.root_pos_w[:, 2:3]], dim=-1)  # (N,3)
-                    root_ref = torch.as_tensor(get_root_target_batch(clip, phase_t),
-                                               dtype=torch.float32, device=device)
+                    rr = get_root_target_batch(clip, phase_t)          # (N,3): vx, vy, base height
+                    if launch_frac > 0.0:
+                        rr = rr.copy()
+                        rr[:, :2] *= ramp[:, None]                     # ramp the velocity target 0->nominal (height kept)
+                    root_ref = torch.as_tensor(rr, dtype=torch.float32, device=device)
                 else:
                     root_now = root_ref = None
 
@@ -1214,13 +1292,11 @@ def train_ppo(env, clip: dict, policy: MLP, value_net: ValueNet,
                 ep_return += reward
                 ep_len += 1
 
-                # Handle resets only the terminated envs
+                # Handle resets only the terminated envs (a launch_frac share of
+                # them restart from rest; the rest use classic RSI).
                 reset_mask = done.bool().cpu().numpy()
                 if reset_mask.any():
-                    phase_t[reset_mask] = np.random.uniform(
-                        0, clip["duration"], size=int(reset_mask.sum()))
-                    reset_envs_to_reference(env, clip, phase_t, device,
-                                            env_ids=np.nonzero(reset_mask)[0])
+                    _reset(np.nonzero(reset_mask)[0])
                     prev_acts[done.bool()] = 0.0   # no action-rate penalty across the reset seam
                     for r, L in zip(ep_return[done.bool()], ep_len[done.bool()]):
                         ep_returns.append(r.item())
@@ -2119,6 +2195,9 @@ def main():
             entropy_coef=args_cli.rl_entropy_coef,
             action_rate_w=args_cli.rl_action_rate_w,
             foot_z_weight=args_cli.rl_foot_z_weight,
+            launch_frac=args_cli.rl_launch_frac,
+            launch_s=args_cli.rl_launch_s,
+            launch_phase=args_cli.rl_launch_phase,
         )
         print(f"------------------- RUN HASH: {run_hash} -------------------")
 
