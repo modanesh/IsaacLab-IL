@@ -1282,10 +1282,20 @@ def train_ppo(env, clip: dict, policy: MLP, value_net: ValueNet,
                 # reference manifold so crouch / shuffle / stand can't be ridden
                 # out for survival reward. The reset path below reseats these envs
                 # on-reference (joints + base + reference velocity).
+                # GRACE: a launch env starts at REST but the reference is already a
+                # full gallop pose, so joint/foot error is unavoidably large while it
+                # accelerates. Suppress DRIFT termination during the launch ramp (the
+                # env's own fall termination still applies) so the policy can
+                # experience -- and learn from -- a multi-step launch instead of being
+                # killed on step 1 (which also generates the catastrophic transitions
+                # that destabilise PPO).
+                in_launch = torch.as_tensor(launch_ramp_t < launch_s, device=device)
+                drift = torch.zeros(num_envs, device=device)
                 if term_joint and term_joint > 0:
-                    done = torch.maximum(done, (joint_err > term_joint).float())
+                    drift = torch.maximum(drift, (joint_err > term_joint).float())
                 if term_foot and term_foot > 0 and has_foot:
-                    done = torch.maximum(done, (foot_err > term_foot).float())
+                    drift = torch.maximum(drift, (foot_err > term_foot).float())
+                done = torch.maximum(done, drift * (~in_launch).float())
 
                 # Directly the MDP into the IsaacLab Buffer, ignoring the Manager-based configurations
                 buf.store(obs_t, acts, logps, reward, done, values)
@@ -2171,7 +2181,17 @@ def main():
                     f"Pass {'--phase-obs' if ckpt_obs_dim == OBS_DIM + 2 else 'no --phase-obs'} "
                     f"to match how the BC policy was trained.")
             policy.load_state_dict(sd, strict=False)
-            print(f"[RL] Loaded BC init from {bc_ckpt}")
+            # Warm-start the VALUE net too when the checkpoint carries it. Loading only
+            # the policy leaves a fresh value net predicting ~0 while the warm-started
+            # policy already returns ~7-8, so every advantage is huge (~return) and the
+            # first PPO updates explode (pg/kl -> 1e8, policy destroyed, survival -> 0).
+            vsd = ck.get("value")
+            if vsd is not None and vsd.get("net.0.weight", torch.empty(0, pobs_dim)).shape[-1] == pobs_dim:
+                value_net.load_state_dict(vsd, strict=False)
+                print(f"[RL] Loaded BC init from {bc_ckpt} (policy + value)")
+            else:
+                print(f"[RL] Loaded policy from {bc_ckpt}; value net is FRESH -- a warm-started "
+                      f"run may be unstable (advantage blow-up). Prefer training from scratch.")
         elif bc_ckpt:
             print(f"[RL] Warning: checkpoint {bc_ckpt} not found, training from scratch.")
 
