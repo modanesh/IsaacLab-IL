@@ -1349,7 +1349,17 @@ def train_ppo(env, clip: dict, policy: MLP, value_net: ValueNet,
         n_updates = 0
         kl_sum, kl_cnt = 0.0, 0
 
+        # Runaway guard: stop this iteration's epochs once a minibatch's approx-KL
+        # blows past 10x the target (0.01). PPO's clipping is one-sided (a NEGATIVE
+        # advantage with a grown ratio is NOT clipped), so the bimodal advantages
+        # from the launch envs (steady gallop vs. failed launch) otherwise let the
+        # policy drift within the 4 epochs until ratios explode (pg/kl -> 1e6).
+        # Normal updates never approach this, so it is a no-op for the stable gaits.
+        KL_STOP = 0.1
+        stop_epochs = False
         for _ in range(n_epochs_per_iter):
+            if stop_epochs:
+                break
             idx = torch.randperm(obs_flat.shape[0], device=device)
             for start in range(0, idx.shape[0], minibatch):
                 b = idx[start:start + minibatch]
@@ -1358,8 +1368,12 @@ def train_ppo(env, clip: dict, policy: MLP, value_net: ValueNet,
                 # Clamp the log-ratio BEFORE exp (avoid +inf -> NaN on a spike).
                 logratio = (new_lp - old_logp_flat[b]).clamp(-20.0, 20.0)
                 ratio = logratio.exp()
-                with torch.no_grad():           # track approx-KL for the adaptive LR
-                    kl_sum += float(((ratio - 1.0) - logratio).mean()); kl_cnt += 1
+                with torch.no_grad():           # track approx-KL for the adaptive LR + guard
+                    approx_kl = float(((ratio - 1.0) - logratio).mean())
+                if approx_kl > KL_STOP:          # drifted too far -> skip this update and stop epochs
+                    stop_epochs = True           # (not counted in kl_sum: it's a skipped step)
+                    break
+                kl_sum += approx_kl; kl_cnt += 1
 
                 pg_loss = -torch.min(
                     ratio * adv_norm[b],
