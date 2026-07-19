@@ -63,10 +63,11 @@ parser.add_argument("--motion-list", type=str, default=None,
                     help="text file of .npz paths (one per line) AMP trains on the whole "
                          "library (the discriminator samples transitions from all clips). "
                          "Required for multi-clip AMP; for bc/rl the first clip is used.")
-parser.add_argument("--mode", type=str, default="bc", choices=["bc", "rl", "amp", "eval"],
+parser.add_argument("--mode", type=str, default="bc", choices=["bc", "rl", "amp", "eval", "launch_eval"],
                     help="bc=behavioral cloning, rl=PPO joint tracking, "
                          "amp=Adversarial Motion Prior (pure imitation, no hand-designed reward), "
-                         "eval=evaluate checkpoint")
+                         "eval=evaluate checkpoint, launch_eval=evaluate the STANDSTILL launch "
+                         "(init at rest, spin the gait up)")
 parser.add_argument("--num_envs", type=int, default=64,
                     help="Parallel envs for data collection / RL training. Use 1 for eval.")
 
@@ -159,6 +160,11 @@ parser.add_argument("--rl_action_rate_w", type=float, default=0.0,
                          "reward to penalise jittery action changes. Try 0.2-0.5. Keep modest "
                          "(a real swing needs large smooth action changes; too high freezes "
                          "the legs).")
+parser.add_argument("--rl_log_std_min", type=float, default=-4.0,
+                    help="Lower bound on the policy action log-std. The default -4.0 lets the std "
+                         "collapse to ~0.018; on a hard/OOD task (the from-rest gallop) that makes "
+                         "PPO ratios explode (kl -> 1e8, blow-up). Raise to -2.5 (std ~0.08) or "
+                         "-2.0 (~0.14) to floor exploration and keep training stable.")
 
 # --- Launch-from-rest curriculum (for deployable standstill starts) --------------
 # A dynamic gait (the gallop) is normally reset already moving at the reference
@@ -455,7 +461,7 @@ def build_policy_obs(obs, phase_t: np.ndarray, clip: dict, device: str, use_phas
 # at the init level (sigma=exp(-1.0)=0.37): without it, the entropy bonus pushes
 # log_std up unboundedly (observed ent 5->12 => sigma 0.37->0.68 => ~0.34 rad of
 # random offset per joint per step with ACTION_SCALE=0.5 == the jittery actions).
-LOG_STD_MIN, LOG_STD_MAX = -4.0, -1.0
+LOG_STD_MIN, LOG_STD_MAX = args_cli.rl_log_std_min, -1.0
 
 
 class MLP(nn.Module):
@@ -2079,6 +2085,88 @@ def _resolve_motion_paths() -> list[str]:
     return paths
 
 
+def auto_launch_phase(clip: dict) -> float:
+    """Cycle fraction of the most-grounded (all-feet-down) stance, from cs_foot; 0 if absent."""
+    if "cs_foot" not in clip:
+        return 0.0
+    ts = np.linspace(0, clip["duration"], 200, endpoint=False)
+    z = np.asarray(clip["cs_foot"](ts)).reshape(len(ts), 4, 3)[:, :, 2]
+    nd = (z < z.min() + 0.05).sum(1)
+    sp = z.max(1) - z.min(1)
+    best = min(range(len(ts)), key=lambda i: (-int(nd[i]), float(sp[i])))
+    return float(ts[best] / clip["duration"])
+
+
+def evaluate_from_rest(env, clip: dict, policy: MLP, device: str, launch_s: float = 1.5,
+                       launch_phase: float = 0.276, n_episodes: int = 10, use_phase: bool = True,
+                       max_s: float = 5.0) -> dict:
+    """Test the STANDSTILL launch: init the robot at REST at the stance phase, spin the
+    gait up with the launch ramp (phase rate 0->nominal over launch_s), and report how
+    long it survives and the forward speed it reaches. This is what the classic eval does
+    NOT test (it starts mid-gait, already moving)."""
+    robot = env.unwrapped.scene["robot"]
+    sim_dt = getattr(env.unwrapped, "step_dt", 0.02)
+    num_envs = env.unwrapped.num_envs
+    duration = clip["duration"]
+    lp_t = (launch_phase % 1.0) * duration
+
+    def smoothstep(x):
+        x = np.clip(x, 0.0, 1.0)
+        return x * x * (3.0 - 2.0 * x)
+
+    ref_v = float(np.abs(get_root_target_batch(clip, np.linspace(0, duration, 100))[:, 0]).mean()) \
+        if "cs_root" in clip else 0.7
+
+    phase_t = np.full(num_envs, lp_t)
+    launch_t = np.zeros(num_envs)
+    obs, _ = env.reset()
+    obs = obs["policy"]
+    reset_envs_to_reference(env, clip, phase_t, device, seed_velocity=False)
+    policy.eval()
+
+    surv, vmax = [], []
+    ep_len = torch.zeros(num_envs, device=device)
+    ep_vmax = torch.zeros(num_envs, device=device)
+    max_steps = int(max_s / sim_dt)
+    print(f"\n[LaunchEval] from REST at phase {launch_phase:.3f}, ramp {launch_s}s, cap {max_s}s "
+          f"(ref fwd speed ~{ref_v:.2f} m/s)")
+
+    while len(surv) < n_episodes * num_envs:
+        with torch.no_grad():
+            if isinstance(obs, dict):
+                obs = obs["policy"]
+            obs_t = build_policy_obs(obs, phase_t, clip, device, use_phase)
+            acts = clamp_knee_actions(policy.act(obs_t, deterministic=True))
+        obs, _, terminated, truncated, _ = env.step(acts)
+        ramp = smoothstep(launch_t / launch_s)
+        phase_t += ramp * sim_dt
+        launch_t += sim_dt
+        ep_vmax = torch.maximum(ep_vmax, robot.data.root_lin_vel_b[:, 0])
+        ep_len += 1
+        done = (terminated | truncated).bool() | (ep_len >= max_steps)
+        if done.any():
+            for L, v in zip(ep_len[done], ep_vmax[done]):
+                surv.append(L.item() * sim_dt)
+                vmax.append(v.item())
+            ep_len[done] = 0.0
+            ep_vmax[done] = 0.0
+            dn = done.cpu().numpy()
+            phase_t[dn] = lp_t
+            launch_t[dn] = 0.0
+            reset_envs_to_reference(env, clip, phase_t, device, env_ids=np.nonzero(dn)[0], seed_velocity=False)
+
+    surv = np.asarray(surv)
+    vmax = np.asarray(vmax)
+    # "launched" = stayed up most of the window AND actually accelerated forward
+    launched = (surv > 0.9 * max_s) & (vmax > max(0.4, 0.5 * ref_v))
+    print(f"[LaunchEval] survival {surv.mean():.2f}+-{surv.std():.2f}s | max fwd vel "
+          f"{vmax.mean():.2f}+-{vmax.std():.2f} m/s | launch success {launched.mean() * 100:.0f}% "
+          f"(up >{0.9 * max_s:.1f}s AND >{max(0.4, 0.5 * ref_v):.2f} m/s)")
+    return {"launch_survival_s": round(float(surv.mean()), 2),
+            "launch_vmax_mps": round(float(vmax.mean()), 2),
+            "launch_success_pct": round(float(launched.mean() * 100), 1)}
+
+
 def main():
     device = "cuda:0"
 
@@ -2221,6 +2309,18 @@ def main():
         )
         print(f"------------------- RUN HASH: {run_hash} -------------------")
 
+        # Auto launch-eval on the BEST saved model: the standstill launch is the goal
+        # of a launch-curriculum run and the classic eval does not test it. Writes
+        # launch_eval_config.yaml into the run dir so a sweep can rank configs.
+        if args_cli.rl_launch_frac > 0.0 and os.path.exists(save_path):
+            best = torch.load(save_path, map_location=device, weights_only=False)
+            eval_policy = MLP(pobs_dim, ACTION_DIM, stochastic=True).to(device)
+            eval_policy.load_state_dict(best.get("policy") or best.get("state_dict"))
+            lp = args_cli.rl_launch_phase if args_cli.rl_launch_phase >= 0 else auto_launch_phase(clip)
+            res = evaluate_from_rest(env, clip, eval_policy, device, launch_s=args_cli.rl_launch_s,
+                                     launch_phase=lp, use_phase=args_cli.phase_obs, n_episodes=3)
+            save_run_yaml(os.path.join(run_dir, "launch_eval_config.yaml"), _args_to_dict(args_cli), res)
+
 
     elif args_cli.mode == "amp":
         if args_cli.phase_obs:
@@ -2304,6 +2404,24 @@ def main():
         # Record eval config + results next to the model (ckpt_dir set above) so each
         # policy_rl_<hash>/ folder ends up with train_config.yaml + eval_config.yaml + logs.
         save_run_yaml(os.path.join(ckpt_dir, "eval_config.yaml"), _args_to_dict(args_cli), eval_results)
+
+    elif args_cli.mode == "launch_eval":
+        if not args_cli.ckpt:
+            raise ValueError("--ckpt required for launch_eval mode")
+        ckpt_dir = os.path.dirname(os.path.abspath(args_cli.ckpt))
+        tee_stdout_to(os.path.join(ckpt_dir, "launch_eval.log"))
+        ck = torch.load(args_cli.ckpt, map_location=device, weights_only=False)
+        sd = ck.get("policy") or ck.get("state_dict")
+        ckpt_obs_dim = sd["net.0.weight"].shape[1]
+        use_phase = ckpt_obs_dim == OBS_DIM + 2
+        policy = MLP(ckpt_obs_dim, ACTION_DIM, stochastic="policy" in ck)
+        policy.load_state_dict(sd)
+        policy = policy.to(device)
+        # Launch phase: explicit --rl_launch_phase, else the clip's most-grounded stance.
+        lp = args_cli.rl_launch_phase if args_cli.rl_launch_phase >= 0 else auto_launch_phase(clip)
+        res = evaluate_from_rest(env, clip, policy, device, launch_s=args_cli.rl_launch_s,
+                                 launch_phase=lp, use_phase=use_phase)
+        save_run_yaml(os.path.join(ckpt_dir, "launch_eval_config.yaml"), _args_to_dict(args_cli), res)
 
 
     env.close()
