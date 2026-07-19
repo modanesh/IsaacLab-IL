@@ -1290,12 +1290,16 @@ def train_ppo(env, clip: dict, policy: MLP, value_net: ValueNet,
                 # on-reference (joints + base + reference velocity).
                 # GRACE: a launch env starts at REST but the reference is already a
                 # full gallop pose, so joint/foot error is unavoidably large while it
-                # accelerates. Suppress DRIFT termination during the launch ramp (the
-                # env's own fall termination still applies) so the policy can
-                # experience -- and learn from -- a multi-step launch instead of being
-                # killed on step 1 (which also generates the catastrophic transitions
-                # that destabilise PPO).
-                in_launch = torch.as_tensor(launch_ramp_t < launch_s, device=device)
+                # accelerates. Suppress DRIFT termination for a SHORT grace after a rest
+                # reset (the env's own fall termination still applies) so the policy is
+                # not killed on step 1 while it settles. The grace is deliberately short
+                # (LAUNCH_GRACE_S): if it were the whole ramp, a launch env that cannot
+                # gallop just CROUCHES and survives the grace, and that survival-crouch
+                # gets rewarded and corrupts the shared policy (return/base-height decay).
+                # After the grace, drift-termination resumes and punishes the crouch, so
+                # only a genuine launch (tracking the slowly-advancing stance) survives.
+                LAUNCH_GRACE_S = 0.25
+                in_launch = torch.as_tensor(launch_ramp_t < LAUNCH_GRACE_S, device=device)
                 drift = torch.zeros(num_envs, device=device)
                 if term_joint and term_joint > 0:
                     drift = torch.maximum(drift, (joint_err > term_joint).float())
