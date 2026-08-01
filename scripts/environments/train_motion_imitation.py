@@ -70,6 +70,10 @@ parser.add_argument("--mode", type=str, default="bc", choices=["bc", "rl", "amp"
                          "(init at rest, spin the gait up)")
 parser.add_argument("--num_envs", type=int, default=64,
                     help="Parallel envs for data collection / RL training. Use 1 for eval.")
+parser.add_argument("--seed", type=int, default=-1,
+                    help="RNG seed for reproducible multi-seed studies (sets numpy + torch). "
+                         "-1 (default) leaves seeding to the OS, matching how the released policies "
+                         "were trained; a >=0 value only affects new runs.")
 
 # BC args
 parser.add_argument("--bc_epochs", type=int, default=200)
@@ -185,6 +189,26 @@ parser.add_argument("--rl_launch_phase", type=float, default=-1.0,
                     help="Cycle fraction [0,1) to launch from (the stance the robot settles "
                          "onto before spinning up). -1 (default) = auto: the most-grounded "
                          "all-feet-down frame of the clip. Should match the deployment phase_start.")
+parser.add_argument("--rl_dr", action="store_true",
+                    help="Enable sim2real balance domain randomization on top of the always-on "
+                         "startup mass/COM DR: (1) friction SPREAD (Isaac's flat default is a "
+                         "degenerate fixed 0.8/0.6, i.e. no spread), (2) mild external PUSHES with "
+                         "a short interval so they fire inside short gesture episodes, and (3) a "
+                         "per-env ACTUATOR effort-limit scale so the policy stops overfitting the "
+                         "nominal ANYdrive strength and learns poses within a weaker torque budget. "
+                         "Off by default so every existing per-clip recipe trains identically.")
+parser.add_argument("--rl_dr_effort", type=float, nargs=2, default=[0.75, 1.0],
+                    metavar=("LO", "HI"),
+                    help="Per-env actuator effort-limit scale ~ U(LO,HI) when --rl_dr is set. "
+                         "Weaken-biased (<=1) because the observed real failure is torque "
+                         "saturation: training with less usable torque yields deployable poses.")
+parser.add_argument("--rl_vel_cmd", type=float, default=-999.0,
+                    help="NON-IMITATION baseline: pin the env base-velocity command to this constant "
+                         "forward speed (m/s) for train AND eval, instead of Isaac's random command "
+                         "curriculum. Combine with imitation weights 0 (--rl_joint_w 0 --rl_foot_w 0 "
+                         "--rl_root_w 0), --task-reward-weight>0, and early-term off (--rl_term_joint 0 "
+                         "--rl_term_foot 0) to train a velocity-tracking controller with no imitation. "
+                         "Default -999 = off (normal imitation training).")
 
 # Shared
 parser.add_argument("--ckpt", type=str, default=None,
@@ -525,8 +549,63 @@ def make_env(num_envs: int, stiffness: float, damping: float):
             velocity_limit=7.5,
         )
     env_cfg.scene.robot = env_cfg.scene.robot.replace(actuators={"legs": dc_cfg})
+
+    if getattr(args_cli, "rl_dr", False):
+        # (1) friction SPREAD -- the flat Anymal-D cfg ships a degenerate fixed
+        #     0.8/0.6 (no randomization); widen it so feet see a range of grip.
+        pm = env_cfg.events.physics_material.params
+        pm["static_friction_range"] = (0.6, 1.0)
+        pm["dynamic_friction_range"] = (0.4, 0.8)
+        # (2) mild external PUSHES -- flat_env_cfg sets push_robot=None. Rebuild it
+        #     with a SHORT interval (so it actually fires inside a ~4 s gesture) and
+        #     a gentle magnitude (a hard shove on a 3-leg stance is unrecoverable).
+        from isaaclab.managers import EventTermCfg as _EventTerm
+        import isaaclab_tasks.manager_based.locomotion.velocity.mdp as _velmdp
+        env_cfg.events.push_robot = _EventTerm(
+            func=_velmdp.push_by_setting_velocity,
+            mode="interval",
+            interval_range_s=(1.5, 3.0),
+            params={"velocity_range": {"x": (-0.15, 0.15), "y": (-0.15, 0.15)}},
+        )
+
+    vc = getattr(args_cli, "rl_vel_cmd", -999.0)
+    if vc > -900.0:
+        # NON-IMITATION velocity-control baseline: pin the env's base-velocity command
+        # to a constant forward vc (straight, no turn), so the task-reward policy is
+        # commanded at the clip's recovered speed instead of Isaac's random command
+        # curriculum. Range collapsed to a point -> every resample yields (vc,0,0).
+        cr = env_cfg.commands.base_velocity
+        cr.heading_command = False                 # use ang_vel_z directly (=0), not heading tracking
+        cr.ranges.lin_vel_x = (vc, vc)
+        cr.ranges.lin_vel_y = (0.0, 0.0)
+        cr.ranges.ang_vel_z = (0.0, 0.0)
+        if hasattr(cr.ranges, "heading"):
+            cr.ranges.heading = (0.0, 0.0)
     env = gym.make(args_cli.task, cfg=env_cfg)
     return env
+
+
+def apply_actuator_dr(env, num_envs: int, lo: float, hi: float, device: str):
+    """Per-env actuator effort-limit randomization (call once, after env.reset()).
+
+    effort_limit is a (num_envs, num_joints) tensor the LSTM ANYdrive net clips its
+    output against. Scaling it per env by ~U(lo,hi) makes some envs weaker, so the
+    policy must find poses achievable within a smaller torque budget instead of
+    overfitting the nominal actuator strength -- the direct fix for the real-robot
+    torque saturation. No built-in event exists for the LSTM actuator, hence the
+    manual write; guarded so a stock (implicit-actuator) build degrades gracefully.
+    """
+    robot = env.unwrapped.scene["robot"]
+    act = robot.actuators.get("legs")
+    if act is None or not hasattr(act, "effort_limit"):
+        print("[DR] actuator effort randomization skipped (no 'legs' effort_limit).")
+        return
+    scale = torch.empty(num_envs, 1, device=device).uniform_(lo, hi)   # (N,1) broadcast over joints
+    act.effort_limit = act.effort_limit * scale
+    if hasattr(act, "effort_limit_sim") and act.effort_limit_sim is not None:
+        act.effort_limit_sim = act.effort_limit_sim * scale
+    print(f"[DR] per-env actuator effort-limit scaled ~U({lo},{hi}); "
+          f"mean now {act.effort_limit.mean().item():.1f} N·m.")
 
 
 def init_joints_to_motion(env, clip: dict, phase_t_arr: np.ndarray, device: str, env_ids=None):
@@ -1174,6 +1253,8 @@ def train_ppo(env, clip: dict, policy: MLP, value_net: ValueNet,
 
     obs, _ = env.reset()
     obs = obs["policy"]
+    if getattr(args_cli, "rl_dr", False):
+        apply_actuator_dr(env, num_envs, args_cli.rl_dr_effort[0], args_cli.rl_dr_effort[1], device)
     _reset(np.arange(num_envs))
 
     best_mean_return = -float("inf")
@@ -1816,6 +1897,8 @@ def evaluate(env, clip: dict, policy: MLP, device: str, n_episodes: int = 5,
     ref_clear = np.ptp(_fr[:, :, 2], axis=0) if has_foot_fid else np.zeros(4)   # per-foot z swing
     ref_stride = np.ptp(_fr[:, :, 0], axis=0) if has_foot_fid else np.zeros(4)  # per-foot x sweep
     jerr_sum = np.zeros(12)            # accumulated mean |q - q_ref| per joint
+    jsq_sum, jsq_n = 0.0, 0            # accumulated mean squared joint error -> RMS e_q (deg)
+    ferr_hist = []                     # per-step mean per-foot Cartesian error (m) -> e_p (cm)
     foot_hist = []                     # per-step body-frame foot pos (env 0)
     rj_hist, rf_hist = [], []          # per-step component rewards (sigmas 0.5/0.3)
     n_fid = 0
@@ -1827,7 +1910,11 @@ def evaluate(env, clip: dict, policy: MLP, device: str, n_episodes: int = 5,
     # footfall reading. ----
     roll_capture = dump_rollout is not None
     roll_cur_f, roll_cur_j = [], []          # current in-progress episode
+    roll_cur_fb, roll_cur_b = [], []         # body-frame feet + base pose (gait / support-polygon)
+    roll_cur_jv, roll_cur_tau, roll_cur_a = [], [], []   # joint vel, applied torque, action (naturalness)
     roll_foot, roll_joint = [], []           # best (longest) episode so far
+    roll_footb, roll_base = [], []
+    roll_jv, roll_tau, roll_a = [], [], []
 
     def log_phys():
         rd = robot.data
@@ -1865,6 +1952,12 @@ def evaluate(env, clip: dict, policy: MLP, device: str, n_episodes: int = 5,
         if roll_capture:                                   # env-0 world foot + joints, this step
             roll_cur_f.append(robot.data.body_pos_w[0, foot_ids, :].cpu().numpy())
             roll_cur_j.append(robot.data.joint_pos[0, :12].cpu().numpy())
+            roll_cur_fb.append(compute_foot_track_sim(robot, foot_ids, device)[0].cpu().numpy())   # (4,3) body frame
+            roll_cur_b.append(torch.cat([robot.data.root_pos_w[0], robot.data.root_quat_w[0]]).cpu().numpy())  # (7,) pos+quat
+            roll_cur_jv.append(robot.data.joint_vel[0, :12].cpu().numpy())          # (12,) rad/s  (naturalness)
+            _tau = getattr(robot.data, "applied_torque", None)                      # (12,) N*m applied at joints
+            roll_cur_tau.append((_tau[0, :12] if _tau is not None else torch.zeros(12, device=device)).cpu().numpy())
+            roll_cur_a.append(acts[0].detach().cpu().numpy())                       # (12,) policy action
 
         q_cur = robot.data.joint_pos[:, :12]
         q_ref_np = get_joint_target_batch(clip, phase_t)
@@ -1873,6 +1966,7 @@ def evaluate(env, clip: dict, policy: MLP, device: str, n_episodes: int = 5,
 
         # ---- fidelity accumulation (deterministic policy vs reference) ----
         jerr_sum += (q_cur - q_ref).abs().mean(dim=0).cpu().numpy()
+        jsq_sum += ((q_cur - q_ref) ** 2).mean().item(); jsq_n += 1        # RMS over joints+envs
         rj_hist.append(torch.exp(-((q_cur - q_ref) ** 2).sum(-1) / 0.5 ** 2).mean().item())
         if has_foot_fid:
             f_c = compute_foot_track_sim(robot, foot_ids, device)          # (N,4,3), z=roll-invariant clearance
@@ -1880,6 +1974,7 @@ def evaluate(env, clip: dict, policy: MLP, device: str, n_episodes: int = 5,
                                   dtype=torch.float32, device=device)
             rf_hist.append(torch.exp(-((f_c - f_r).reshape(f_c.shape[0], -1) ** 2)
                                      .sum(-1) / 0.3 ** 2).mean().item())
+            ferr_hist.append(torch.linalg.norm(f_c - f_r, dim=-1).mean().item())  # mean per-foot ||.|| (m)
             foot_hist.append(f_c[0].cpu().numpy())                          # env 0
         n_fid += 1
 
@@ -1897,18 +1992,26 @@ def evaluate(env, clip: dict, policy: MLP, device: str, n_episodes: int = 5,
             done_np = done.cpu().numpy()
             if roll_capture and done_np[0]:                # env 0 finished an episode: keep the longest
                 if len(roll_cur_f) > len(roll_foot):
-                    roll_foot, roll_joint = roll_cur_f, roll_cur_j
-                roll_cur_f, roll_cur_j = [], []
+                    roll_foot, roll_joint, roll_footb, roll_base = roll_cur_f, roll_cur_j, roll_cur_fb, roll_cur_b
+                    roll_jv, roll_tau, roll_a = roll_cur_jv, roll_cur_tau, roll_cur_a
+                roll_cur_f, roll_cur_j, roll_cur_fb, roll_cur_b = [], [], [], []
+                roll_cur_jv, roll_cur_tau, roll_cur_a = [], [], []
             phase_t[done_np] = 0.0
             init_joints_to_motion(env, clip, phase_t, device,
                                   env_ids=np.nonzero(done_np)[0])
 
     if roll_capture and len(roll_cur_f) > len(roll_foot):  # a still-running final episode may be longest
-        roll_foot, roll_joint = roll_cur_f, roll_cur_j
+        roll_foot, roll_joint, roll_footb, roll_base = roll_cur_f, roll_cur_j, roll_cur_fb, roll_cur_b
+        roll_jv, roll_tau, roll_a = roll_cur_jv, roll_cur_tau, roll_cur_a
     if dump_rollout is not None and len(roll_foot) >= 20:
         np.savez(dump_rollout,
                  foot_pos=np.asarray(roll_foot, np.float32),          # (T,4,3) WORLD, order LF RF LH RH
+                 foot_pos_body=np.asarray(roll_footb, np.float32),    # (T,4,3) BODY frame (contact/gait)
+                 base_pose=np.asarray(roll_base, np.float32),         # (T,7) root pos(3)+quat(4) WORLD
                  joint_pos_isaac=np.asarray(roll_joint, np.float32),  # (T,12)
+                 joint_vel=np.asarray(roll_jv, np.float32),           # (T,12) rad/s  (naturalness: saturation)
+                 torque=np.asarray(roll_tau, np.float32),             # (T,12) N*m    (naturalness: peak/RMS torque, CoT)
+                 action=np.asarray(roll_a, np.float32),               # (T,12)        (naturalness: action-rate RMS)
                  fps=np.float32(1.0 / sim_dt),
                  foot_names=np.array(AMP_FOOT_BODIES))
         print(f"[Eval] Saved first-episode rollout ({len(roll_foot)} steps @ {1.0/sim_dt:.0f}Hz) "
@@ -1954,7 +2057,13 @@ def evaluate(env, clip: dict, policy: MLP, device: str, n_episodes: int = 5,
         haaF, haaH = fh(0); hfeF, hfeH = fh(4); kfeF, kfeH = fh(8)
         results["r_joint"] = round(float(np.mean(rj_hist)), 3)
         results["r_foot"] = round(float(np.mean(rf_hist)), 3) if rf_hist else None
+        # PHYSICAL (sigma-independent) errors for the paper: RMS joint angle (deg) and
+        # mean per-foot Cartesian error (cm).
+        results["e_q_deg"] = round(float(np.rad2deg(np.sqrt(jsq_sum / max(jsq_n, 1)))), 1)
+        results["e_p_cm"] = round(float(np.mean(ferr_hist) * 100.0), 1) if ferr_hist else None
         print("\n[Eval] ---- reference fidelity (DETERMINISTIC policy vs clip gait) ----")
+        print(f"  PHYSICAL error: e_q = {results['e_q_deg']} deg (RMS joint)  |  "
+              f"e_p = {results['e_p_cm']} cm (mean per-foot)")
         print(f"  per-step (deterministic):  r_joint={results['r_joint']:.2f}  "
               f"r_foot={results['r_foot'] if results['r_foot'] is not None else float('nan'):.2f}   (1.0=perfect; sigmas 0.5/0.3)")
         print(f"  joint err |q-q_ref| (rad)  front / hind:  "
@@ -2187,6 +2296,13 @@ def evaluate_from_rest(env, clip: dict, policy: MLP, device: str, launch_s: floa
 
 def main():
     device = "cuda:0"
+
+    # Optional reproducible seeding for multi-seed studies (no-op for the default -1).
+    if args_cli.seed is not None and args_cli.seed >= 0:
+        np.random.seed(args_cli.seed)
+        torch.manual_seed(args_cli.seed)
+        torch.cuda.manual_seed_all(args_cli.seed)
+        print(f"[Seed] numpy/torch seeded with {args_cli.seed}")
 
     # Generate random 6 character hash for this run
     run_hash = uuid.uuid4().hex[:6]

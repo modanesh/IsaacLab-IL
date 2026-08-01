@@ -33,7 +33,7 @@ config:
   mode: eval
   motion: scripts/environments/data/motions/greyhound_gallop.npz
   motion_list: null
-  num_envs: 1
+  num_envs: 64
   phase_obs: false
   physics_gpu: 0
   rendering_mode: null
@@ -44,6 +44,10 @@ config:
   rl_foot_z_weight: 1.0
   rl_iters: 2000
   rl_joint_w: 0.5
+  rl_launch_frac: 0.0
+  rl_launch_phase: -1.0
+  rl_launch_s: 1.5
+  rl_log_std_min: -4.0
   rl_lr: 0.0001
   rl_root_sigma: 0.25
   rl_root_w: 0.2
@@ -59,21 +63,23 @@ config:
   verbose: false
   xr: false
 results:
-  base_height_m: 0.528
+  base_height_m: 0.5
   clearance_pct:
-    LF: 140
-    LH: 115
-    RF: 148
-    RH: 89
-  cmd_track_err: 1.418
-  feet_air_pct: 26.3
-  forward_vel_mps: 0.656
-  mean_tracking_reward: 0.0078
-  r_foot: 0.171
-  r_joint: 0.087
+    LF: 243
+    LH: 233
+    RF: 493
+    RH: 519
+  cmd_track_err: 1.335
+  e_p_cm: 23.9
+  e_q_deg: 19.6
+  feet_air_pct: 22.1
+  forward_vel_mps: 0.481
+  mean_tracking_reward: 0.0096
+  r_foot: 0.221
+  r_joint: 0.119
   stride_pct:
-    LF: 78
+    LF: 84
     LH: 91
-    RF: 84
-    RH: 71
-  survival_s: 11.19
+    RF: 87
+    RH: 69
+  survival_s: 6.2
