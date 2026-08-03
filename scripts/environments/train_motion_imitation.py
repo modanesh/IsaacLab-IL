@@ -1883,6 +1883,11 @@ def evaluate(env, clip: dict, policy: MLP, device: str, n_episodes: int = 5,
     # ---- physical-behaviour diagnostics: tell standing / in-place-stepping /
     # walking apart, and whether the policy responds to velocity commands ----
     foot_ids = [list(robot.body_names).index(n) for n in AMP_FOOT_BODIES]
+    # contact sensor -> TRUE per-foot contact force (for reliable gait/duty; foot-height
+    # contact detection is confounded by base bounce). None-safe if the sensor is absent.
+    _cs = env.unwrapped.scene.sensors.get("contact_forces") if hasattr(env.unwrapped.scene, "sensors") else None
+    cs_foot_ids = ([list(_cs.body_names).index(n) for n in AMP_FOOT_BODIES]
+                   if _cs is not None else None)
     phys = {k: [] for k in ("vx", "vy", "wz", "cmd_vx", "cmd_vy", "cmd_wz",
                             "base_h", "jvel", "foot_air", "cmd_err")}
 
@@ -1912,9 +1917,10 @@ def evaluate(env, clip: dict, policy: MLP, device: str, n_episodes: int = 5,
     roll_cur_f, roll_cur_j = [], []          # current in-progress episode
     roll_cur_fb, roll_cur_b = [], []         # body-frame feet + base pose (gait / support-polygon)
     roll_cur_jv, roll_cur_tau, roll_cur_a = [], [], []   # joint vel, applied torque, action (naturalness)
+    roll_cur_c = []                          # per-foot contact-force magnitude (true gait/duty)
     roll_foot, roll_joint = [], []           # best (longest) episode so far
     roll_footb, roll_base = [], []
-    roll_jv, roll_tau, roll_a = [], [], []
+    roll_jv, roll_tau, roll_a, roll_c = [], [], [], []
 
     def log_phys():
         rd = robot.data
@@ -1958,6 +1964,11 @@ def evaluate(env, clip: dict, policy: MLP, device: str, n_episodes: int = 5,
             _tau = getattr(robot.data, "applied_torque", None)                      # (12,) N*m applied at joints
             roll_cur_tau.append((_tau[0, :12] if _tau is not None else torch.zeros(12, device=device)).cpu().numpy())
             roll_cur_a.append(acts[0].detach().cpu().numpy())                       # (12,) policy action
+            if cs_foot_ids is not None:                                             # (4,) N contact force per foot
+                roll_cur_c.append(torch.linalg.norm(
+                    _cs.data.net_forces_w[0, cs_foot_ids, :], dim=-1).cpu().numpy())
+            else:
+                roll_cur_c.append(np.zeros(4, np.float32))
 
         q_cur = robot.data.joint_pos[:, :12]
         q_ref_np = get_joint_target_batch(clip, phase_t)
@@ -1993,16 +2004,16 @@ def evaluate(env, clip: dict, policy: MLP, device: str, n_episodes: int = 5,
             if roll_capture and done_np[0]:                # env 0 finished an episode: keep the longest
                 if len(roll_cur_f) > len(roll_foot):
                     roll_foot, roll_joint, roll_footb, roll_base = roll_cur_f, roll_cur_j, roll_cur_fb, roll_cur_b
-                    roll_jv, roll_tau, roll_a = roll_cur_jv, roll_cur_tau, roll_cur_a
+                    roll_jv, roll_tau, roll_a, roll_c = roll_cur_jv, roll_cur_tau, roll_cur_a, roll_cur_c
                 roll_cur_f, roll_cur_j, roll_cur_fb, roll_cur_b = [], [], [], []
-                roll_cur_jv, roll_cur_tau, roll_cur_a = [], [], []
+                roll_cur_jv, roll_cur_tau, roll_cur_a, roll_cur_c = [], [], [], []
             phase_t[done_np] = 0.0
             init_joints_to_motion(env, clip, phase_t, device,
                                   env_ids=np.nonzero(done_np)[0])
 
     if roll_capture and len(roll_cur_f) > len(roll_foot):  # a still-running final episode may be longest
         roll_foot, roll_joint, roll_footb, roll_base = roll_cur_f, roll_cur_j, roll_cur_fb, roll_cur_b
-        roll_jv, roll_tau, roll_a = roll_cur_jv, roll_cur_tau, roll_cur_a
+        roll_jv, roll_tau, roll_a, roll_c = roll_cur_jv, roll_cur_tau, roll_cur_a, roll_cur_c
     if dump_rollout is not None and len(roll_foot) >= 20:
         np.savez(dump_rollout,
                  foot_pos=np.asarray(roll_foot, np.float32),          # (T,4,3) WORLD, order LF RF LH RH
@@ -2012,6 +2023,7 @@ def evaluate(env, clip: dict, policy: MLP, device: str, n_episodes: int = 5,
                  joint_vel=np.asarray(roll_jv, np.float32),           # (T,12) rad/s  (naturalness: saturation)
                  torque=np.asarray(roll_tau, np.float32),             # (T,12) N*m    (naturalness: peak/RMS torque, CoT)
                  action=np.asarray(roll_a, np.float32),               # (T,12)        (naturalness: action-rate RMS)
+                 contact_force=np.asarray(roll_c, np.float32),        # (T,4) N       (TRUE contact -> duty/gait)
                  fps=np.float32(1.0 / sim_dt),
                  foot_names=np.array(AMP_FOOT_BODIES))
         print(f"[Eval] Saved first-episode rollout ({len(roll_foot)} steps @ {1.0/sim_dt:.0f}Hz) "
