@@ -20,7 +20,7 @@ config:
   bc_collect_s: 60.0
   bc_epochs: 200
   bc_lr: 0.0003
-  ckpt: scripts/environments/checkpoints/horses_walk/policy_rl_0ee32e/model.pt
+  ckpt: scripts/environments/checkpoints/horses_trot_v2_s2r/horses_trot_v2/policy_rl_846766/model.pt
   cpu: false
   create_new_stage: false
   damping: 5.0
@@ -31,7 +31,7 @@ config:
   info: false
   kit_args: ''
   mode: eval
-  motion: scripts/environments/data/motions/horses_walk.npz
+  motion: scripts/environments/data/motions/horses_trot_v2.npz
   motion_list: null
   num_envs: 64
   phase_obs: false
@@ -67,23 +67,23 @@ config:
   verbose: false
   xr: false
 results:
-  base_height_m: 0.534
+  base_height_m: 0.521
   clearance_pct:
-    LF: 52
-    LH: 51
-    RF: 62
-    RH: 71
-  cmd_track_err: 1.165
-  e_p_cm: 14.9
-  e_q_deg: 13.4
-  feet_air_pct: 7.5
-  forward_vel_mps: 0.544
-  mean_tracking_reward: 0.0401
-  r_foot: 0.389
-  r_joint: 0.224
+    LF: 42
+    LH: 32
+    RF: 58
+    RH: 45
+  cmd_track_err: 1.06
+  e_p_cm: 14.0
+  e_q_deg: 11.9
+  feet_air_pct: 1.0
+  forward_vel_mps: 0.531
+  mean_tracking_reward: 0.0417
+  r_foot: 0.429
+  r_joint: 0.273
   stride_pct:
-    LF: 61
-    LH: 65
-    RF: 76
-    RH: 62
+    LF: 46
+    LH: 50
+    RF: 39
+    RH: 56
   survival_s: 20.0

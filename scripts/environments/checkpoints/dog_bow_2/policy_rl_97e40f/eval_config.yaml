@@ -67,23 +67,23 @@ config:
   verbose: false
   xr: false
 results:
-  base_height_m: 0.422
+  base_height_m: 0.427
   clearance_pct:
-    LF: 34
-    LH: 90
-    RF: 34
-    RH: 89
-  cmd_track_err: 1.078
-  e_p_cm: 7.0
-  e_q_deg: 4.6
-  feet_air_pct: 0.1
-  forward_vel_mps: -0.0
-  mean_tracking_reward: 0.3776
-  r_foot: 0.78
-  r_joint: 0.769
+    LF: 33
+    LH: 87
+    RF: 32
+    RH: 87
+  cmd_track_err: 0.966
+  e_p_cm: 6.5
+  e_q_deg: 4.7
+  feet_air_pct: 0.2
+  forward_vel_mps: 0.001
+  mean_tracking_reward: 0.3587
+  r_foot: 0.807
+  r_joint: 0.758
   stride_pct:
-    LF: 117
-    LH: 249
+    LF: 122
+    LH: 266
     RF: 117
-    RH: 252
+    RH: 241
   survival_s: 20.0

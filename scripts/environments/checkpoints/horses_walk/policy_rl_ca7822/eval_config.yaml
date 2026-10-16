@@ -20,7 +20,7 @@ config:
   bc_collect_s: 60.0
   bc_epochs: 200
   bc_lr: 0.0003
-  ckpt: scripts/environments/checkpoints/greyhound_gallop/policy_rl_1a2009/model.pt
+  ckpt: scripts/environments/checkpoints/horses_walk_s2r/horses_walk/policy_rl_ca7822/model.pt
   cpu: false
   create_new_stage: false
   damping: 5.0
@@ -31,13 +31,15 @@ config:
   info: false
   kit_args: ''
   mode: eval
-  motion: scripts/environments/data/motions/greyhound_gallop.npz
+  motion: scripts/environments/data/motions/horses_walk.npz
   motion_list: null
   num_envs: 64
   phase_obs: false
   physics_gpu: 0
   rendering_mode: null
   rl_action_rate_w: 0.0
+  rl_dr: false
+  rl_dr_effort: '[0.75, 1.0]'
   rl_entropy_coef: 0.0
   rl_foot_sigma: 0.2
   rl_foot_w: 0.3
@@ -55,31 +57,33 @@ config:
   rl_steps: 24
   rl_term_foot: 0.5
   rl_term_joint: 2.0
+  rl_vel_cmd: -999.0
   rl_vel_weight: 0.5
   save_dir: ./checkpoints
+  seed: -1
   stiffness: 200.0
   task: Isaac-Velocity-Flat-Anymal-D-v0
   task_reward_weight: 0.0
   verbose: false
   xr: false
 results:
-  base_height_m: 0.5
+  base_height_m: 0.536
   clearance_pct:
-    LF: 243
-    LH: 233
-    RF: 493
-    RH: 519
-  cmd_track_err: 1.335
-  e_p_cm: 23.9
-  e_q_deg: 19.6
-  feet_air_pct: 22.1
-  forward_vel_mps: 0.481
-  mean_tracking_reward: 0.0096
-  r_foot: 0.221
-  r_joint: 0.119
+    LF: 38
+    LH: 73
+    RF: 54
+    RH: 93
+  cmd_track_err: 1.181
+  e_p_cm: 14.9
+  e_q_deg: 13.3
+  feet_air_pct: 3.9
+  forward_vel_mps: 0.532
+  mean_tracking_reward: 0.0232
+  r_foot: 0.363
+  r_joint: 0.185
   stride_pct:
-    LF: 84
-    LH: 91
-    RF: 87
-    RH: 69
-  survival_s: 6.2
+    LF: 53
+    LH: 65
+    RF: 68
+    RH: 61
+  survival_s: 20.0

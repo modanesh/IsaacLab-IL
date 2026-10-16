@@ -34,8 +34,21 @@ python scripts/retargeting/retarget.py --ref-motion scripts/environments/data/mo
 ```
 Monocular depth is *anisotropically* noisy, so the lateral axis is **pinned** while the
 clean image-plane axes drive the IK, plus a knee-branch constraint and hip regularization.
-`--synth-bow` synthesizes the non-locomotion bow; `--collect-z/--collect-x` shrink an
-over-athletic reference into the robot's reachable envelope.
+`--collect-z/--collect-x` shrink an over-athletic reference into the robot's reachable
+envelope. The two **gestures** (bow, give-paw) then take one extra keyframe-synthesis
+pass, see step 4b.
+
+### 4b- 🙇 Gesture synthesis (bow and give-paw only)
+```bash
+python scripts/retargeting/synth_gesture.py --gesture bow     --input <bow_retarget>.npz     --output scripts/environments/data/motions/dog_bow_2.npz
+python scripts/retargeting/synth_gesture.py --gesture givepaw --input <givepaw_retarget>.npz --output scripts/environments/data/motions/dog_givepaw_gentle.npz --sched 20 25 20 25 20 --alpha-max 0.55 --brace 0.12
+```
+Neither gesture clip contains one clean repetition: the bow is mostly a *held* pose with
+almost no transition, and the give-paw clip has two paw-lifts plus jitter in the raised
+leg. This pass takes two **real retargeted poses** from the clip (a neutral stand and the
+extreme of the gesture) and smoothstep-eases between them, giving one clean repetition with
+exact loop closure. The poses come from the video; only the timing between them is
+synthesized. The three gaits do **not** use this step.
 
 ### 5- 🧭 Recover global root translation
 ```bash
@@ -44,8 +57,8 @@ python scripts/environments/data/recover_root_translation.py --motion scripts/en
 Fixed-base IK discards world translation; this restores it from stance-foot cadence & stride.
 
 >️ **Optional for clip conditioning.** `scripts/retargeting/polish_motion.py` smooths joints
-> and reshapes amplitude in *joint space* to fit ANYmal's actuator limits (used for the
-> greyhound gallop). Slow-motion removal lives in the CopyQuad repo's `scripts/`.
+> and reshapes amplitude in *joint space* to fit ANYmal's actuator limits (for athletic
+> references). Slow-motion removal lives in the CopyQuad repo's `scripts/`.
 
 ### 6- 🎯 Train - phase-indexed DeepMimic policy
 ```bash
@@ -64,7 +77,7 @@ Key reward knobs: `--rl_root_w` (forward-speed demand), `--rl_foot_z_weight` (cl
 ## 🎥 Playback
 
 ```bash
-python scripts/environments/anymal_motion_playback.py --motion scripts/environments/data/motions/greyhound_gallop.npz
+python scripts/environments/anymal_motion_playback.py --motion scripts/environments/data/motions/horses_trot_v2.npz
 ```
 - 🟢 default **kinematic** (base pinned, joints written directly, retarget ground truth)
 - 🔵 `--physics` (free base + gravity + PD targets, dynamic feasibility)
@@ -77,13 +90,16 @@ python scripts/environments/anymal_motion_playback.py --motion scripts/environme
 Five reference motions and one trained policy each, under
 `scripts/environments/data/motions/` and `scripts/environments/checkpoints/`:
 
-| Motion | Gait | Policy |
+| Motion | Behavior | Policy |
 |---|---|---|
-| `horses_walk` | 🐴 horse walk | `policy_rl_0ee32e` |
-| `dog1_slow` | 🐕 dog walk | `policy_rl_ba46f3` |
-| `horses_trot_v2` | 🐎 horse trot | `policy_rl_c7b4ce` |
-| `greyhound_gallop` | 🐆 gallop | `policy_rl_1a2009` |
+| `dog1_slow` | 🐕 dog walk | `policy_rl_8c5eb2` |
+| `horses_walk` | 🐴 horse walk | `policy_rl_ca7822` |
+| `horses_trot_v2` | 🐎 horse trot | `policy_rl_846766` |
 | `dog_bow_2` | 🙇 dog bow | `policy_rl_97e40f` |
+| `dog_givepaw_gentle` | 🐾 dog give-paw | `policy_rl_4f2367` |
+
+These are the five behaviors of the paper, and each policy is the one deployed on the
+physical ANYmal-D.
 
 > 🗄️ All experiments, diagnostics, and intermediate artifacts are preserved on the
 > `archive/pre-release` branch.

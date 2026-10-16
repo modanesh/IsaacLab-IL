@@ -26,6 +26,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--robot", type=str, default="anymal_d")
     p.add_argument("--fps", type=float, required=True)
     p.add_argument("--height_offset", type=float, default=0.0)
+    p.add_argument(
+        "--fit-vertical", action="store_true", default=False,
+        help=(
+            "Minimal per-clip FEASIBILITY REPAIR of the vertical axis. The default "
+            "scale matches the animal's median standing height to the robot's base "
+            "height; for a reference whose feet plunge deeper than 1.05*leg_length "
+            "below the body at their lowest, that leaves targets outside the "
+            "workspace which the shell clamp then flattens, destroying the gait. "
+            "This shrinks scale['z'] so the DEEPEST foot target is exactly "
+            "reachable. Our own references need it (they clear the shell with a "
+            "margin); a learned 3D reconstruction may not."
+        ),
+    )
     p.add_argument("--ik_iterations", type=int, default=20)
     p.add_argument("--visualize", action="store_true", default=False)
     p.add_argument("--plot_skeleton", action="store_true", default=False)
@@ -340,6 +353,18 @@ def run_targeting(args) -> None:
     ref = load_reference_motion(args.ref_motion, args.fps)
     meta = ROBOT_META[args.robot]
     scale = compute_scale_factors(ref, meta)
+    if args.fit_vertical:
+        _fl = world_to_local_points(ref.root_pos, ref.root_rot, ref.foot_pos)
+        _deepest = float(np.abs(_fl[..., 2]).max())          # ref units
+        _limit = float(meta["leg_length"]) * 1.05
+        _need = _limit / max(_deepest, 1e-9)
+        if _need < scale["z"]:
+            print(f"[FitVertical] deepest foot {_deepest * scale['z']:.3f} m exceeds reach "
+                  f"{_limit:.3f} m; scale z {scale['z']:.6f} -> {_need:.6f} "
+                  f"(base height {_deepest * _need * 0 + meta['base_height'] * _need / scale['z']:.3f} m)")
+            scale["z"] = _need
+        else:
+            print("[FitVertical] no repair needed; all foot targets already reachable")
     
     scaled_root_pos, scaled_root_rot, scaled_foot_pos_world, scaled_foot_pos_local = build_scaled_targets(
         ref.root_pos, ref.root_rot, ref.foot_pos, meta, scale, args.height_offset,

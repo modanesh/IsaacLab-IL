@@ -231,7 +231,54 @@ parser.add_argument("--phase-obs", action="store_true", default=False,
                          "BC and RL. Must be consistent between BC and RL warm-start; eval "
                          "auto-detects it from the checkpoint.")
 
+# --- Viewer / presentation defaults (for recording clean videos) ---------------
+# These change only what the VIEWPORT shows -- no physics, no observations, no
+# reward. Defaults are the recording setup; each has an opt-out for the old look.
+parser.add_argument("--cam-eye", type=float, nargs=3, default=[5.0, 0.0, 2.0],
+                    metavar=("X", "Y", "Z"),
+                    help="Viewer camera position. With the default follow camera this is an "
+                         "OFFSET from the robot's base, not a world position. Default 5 0 2 "
+                         "(5 m ahead, 2 m up, looking back at the robot).")
+parser.add_argument("--cam-lookat", type=float, nargs=3, default=[0.0, 0.0, 0.0],
+                    metavar=("X", "Y", "Z"),
+                    help="Viewer camera target, same frame as --cam-eye. Default 0 0 0 = the "
+                         "robot's base.")
+parser.add_argument("--no-follow-cam", action="store_true", default=False,
+                    help="Disable the robot-following camera and use a static world camera at "
+                         "--cam-eye (the pre-2026-09 behaviour). The follow camera is on by "
+                         "default so locomotion clips do not walk out of frame.")
+parser.add_argument("--no-studio-light", action="store_true", default=False,
+                    help="Keep the stage's own lights instead of applying the 'Grey Studio' "
+                         "viewport light rig. Ignored when headless (no viewport).")
+parser.add_argument("--vel-arrows", action="store_true", default=False,
+                    help="Re-enable the green (commanded) and blue (measured) base-velocity "
+                         "arrows drawn over the robot. Off by default so they stay out of "
+                         "recordings.")
+parser.add_argument("--eval-episodes", type=int, default=10,
+                    help="Episodes for --mode eval. Default 10 (the number every reported "
+                         "metric was computed with -- do not lower it for numbers you intend "
+                         "to quote). Set 1 for a recording pass, so the run ends with the "
+                         "video instead of playing nine more episodes.")
+parser.add_argument("--video", action="store_true", default=False,
+                    help="Record the run to an mp4 (implies --enable_cameras). Captures the "
+                         "same /OmniverseKit_Persp camera the viewport uses, so the follow "
+                         "camera and the studio lighting are in the recording.")
+parser.add_argument("--video-length", type=int, default=1000,
+                    help="Number of env steps to record, starting from the first step. "
+                         "Steps are 1/50 s, so the default 1000 = 20 s = one full eval "
+                         "episode. 0 records until the script ends (large files).")
+parser.add_argument("--video-dir", type=str, default=None,
+                    help="Where to write the mp4. Default: <ckpt dir>/videos, else "
+                         "<save_dir>/videos.")
+parser.add_argument("--video-res", type=int, nargs=2, default=[1920, 1080],
+                    metavar=("W", "H"),
+                    help="Recording resolution. Default 1920 1080.")
+
 args_cli = parser.parse_args()
+
+# Recording needs the renderer running even when there is no window on screen.
+if args_cli.video:
+    args_cli.enable_cameras = True
 
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
@@ -550,6 +597,29 @@ def make_env(num_envs: int, stiffness: float, damping: float):
         )
     env_cfg.scene.robot = env_cfg.scene.robot.replace(actuators={"legs": dc_cfg})
 
+    # --- viewer: follow the robot ---------------------------------------------
+    # origin_type="asset_root" makes viewer.eye/lookat OFFSETS from the robot base
+    # and re-applies them every render step, so a walking/trotting policy stays in
+    # frame. The controller is only built when there IS a viewport (headless -> None
+    # in manager_based_env.py), so this is a no-op for headless runs.
+    env_cfg.viewer.eye = tuple(args_cli.cam_eye)
+    env_cfg.viewer.lookat = tuple(args_cli.cam_lookat)
+    # viewer.resolution is also the render-product size used by env.render(), i.e. the
+    # frame size of a --video recording.
+    env_cfg.viewer.resolution = tuple(args_cli.video_res)
+    if not args_cli.no_follow_cam:
+        env_cfg.viewer.origin_type = "asset_root"
+        env_cfg.viewer.asset_name = "robot"
+        env_cfg.viewer.env_index = 0
+
+    # --- hide the base-velocity arrows ----------------------------------------
+    # The velocity command term draws a GREEN arrow (commanded vel) and a BLUE one
+    # (measured vel) above the base; the flat Anymal-D cfg turns them on. They are
+    # pure visualization markers -- the command itself is unchanged, so nothing the
+    # policy sees or any eval metric is affected.
+    if not args_cli.vel_arrows and hasattr(env_cfg.commands, "base_velocity"):
+        env_cfg.commands.base_velocity.debug_vis = False
+
     if getattr(args_cli, "rl_dr", False):
         # (1) friction SPREAD -- the flat Anymal-D cfg ships a degenerate fixed
         #     0.8/0.6 (no randomization); widen it so feet see a range of grip.
@@ -581,8 +651,78 @@ def make_env(num_envs: int, stiffness: float, damping: float):
         cr.ranges.ang_vel_z = (0.0, 0.0)
         if hasattr(cr.ranges, "heading"):
             cr.ranges.heading = (0.0, 0.0)
-    env = gym.make(args_cli.task, cfg=env_cfg)
+    # render_mode="rgb_array" is what makes env.render() return frames for RecordVideo.
+    env = gym.make(args_cli.task, cfg=env_cfg,
+                   render_mode="rgb_array" if args_cli.video else None)
     return env
+
+
+def maybe_wrap_video(env):
+    """Wrap the env in gymnasium's RecordVideo when --video is set, else pass it through.
+
+    Uses a STEP trigger rather than an episode trigger on purpose: evaluate() calls
+    env.reset() exactly once and then lets Isaac auto-reset each episode in-place, so
+    the wrapper's episode counter never advances. Step-triggered recording is also
+    what IsaacLab's own play.py does. Frames come from env.render(), which renders
+    cfg.viewer.cam_prim_path (/OmniverseKit_Persp) at cfg.viewer.resolution -- the
+    same camera the follow-cam controller drives.
+    """
+    if not args_cli.video:
+        return env
+    if args_cli.video_dir:
+        out_dir = args_cli.video_dir
+    elif args_cli.ckpt:
+        out_dir = os.path.join(os.path.dirname(os.path.abspath(args_cli.ckpt)), "videos")
+    else:
+        out_dir = os.path.join(args_cli.save_dir, "videos")
+    os.makedirs(out_dir, exist_ok=True)
+    name = (os.path.splitext(os.path.basename(args_cli.motion))[0]
+            if args_cli.motion else "motion")
+    env = gym.wrappers.RecordVideo(
+        env,
+        video_folder=out_dir,
+        step_trigger=lambda step: step == 0,
+        video_length=args_cli.video_length,
+        name_prefix=name,
+        disable_logger=True,
+    )
+    # metadata["render_fps"] = 1/step_dt (50), so the mp4 plays at wall-clock speed.
+    secs = args_cli.video_length / 50.0 if args_cli.video_length else float("inf")
+    print(f"[Video] recording {args_cli.video_length} steps (~{secs:.0f} s) at "
+          f"{args_cli.video_res[0]}x{args_cli.video_res[1]} -> {out_dir}/{name}-step-0.mp4")
+    return env
+
+
+def apply_studio_lighting(rig: str = "Grey Studio"):
+    """Switch the viewport to one of Kit's light rigs (the Lighting menu, in code).
+
+    Same path the viewport's Lighting menu takes: the rig USD is referenced into the
+    SESSION layer under /OmniKit_Viewport_LightRig and the stage's own lights are
+    hidden, so nothing is written to the scene and the physics is untouched. Rig
+    names come from the usd files shipped by omni.kit.viewport.menubar.lighting
+    ("Default", "Grey Studio", "Colored Lights").
+
+    Skipped for a plain headless run (nothing is being rendered). It is still
+    attempted for `--headless --video`, but the headless rendering experience does
+    not load the menubar extensions, so there the command is unavailable and the
+    recording keeps the stage's own lights -- record with the GUI for the studio
+    look. Never raises: a missing extension must not take down a training run.
+    """
+    if args_cli.headless and not args_cli.enable_cameras:
+        return
+    try:
+        import omni.kit.commands
+        ok = omni.kit.commands.execute("SetLightingMenuModeCommand", lighting_mode=rig)
+        # execute() returns (bool, result); the command itself also returns a pair
+        if isinstance(ok, tuple):
+            ok = ok[0]
+        if ok:
+            print(f"[Viewer] lighting rig: {rig}")
+        else:
+            print(f"[Viewer] WARNING: could not apply the '{rig}' lighting rig; "
+                  "falling back to the stage lights.")
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[Viewer] WARNING: lighting rig '{rig}' not applied ({e}).")
 
 
 def apply_actuator_dr(env, num_envs: int, lo: float, hi: float, device: str):
@@ -1904,6 +2044,8 @@ def evaluate(env, clip: dict, policy: MLP, device: str, n_episodes: int = 5,
     jerr_sum = np.zeros(12)            # accumulated mean |q - q_ref| per joint
     jsq_sum, jsq_n = 0.0, 0            # accumulated mean squared joint error -> RMS e_q (deg)
     ferr_hist = []                     # per-step mean per-foot Cartesian error (m) -> e_p (cm)
+    ferr_ax_hist = []                  # per-step mean |err| per body-frame axis (m) -> e_p_axis (cm)
+                                       # body frame: x fore-aft, y LATERAL (the pinned axis), z vertical
     foot_hist = []                     # per-step body-frame foot pos (env 0)
     rj_hist, rf_hist = [], []          # per-step component rewards (sigmas 0.5/0.3)
     n_fid = 0
@@ -1986,6 +2128,9 @@ def evaluate(env, clip: dict, policy: MLP, device: str, n_episodes: int = 5,
             rf_hist.append(torch.exp(-((f_c - f_r).reshape(f_c.shape[0], -1) ** 2)
                                      .sum(-1) / 0.3 ** 2).mean().item())
             ferr_hist.append(torch.linalg.norm(f_c - f_r, dim=-1).mean().item())  # mean per-foot ||.|| (m)
+            # per-axis decomposition: isolates how much of e_p lives on the pinned
+            # lateral axis vs. the two axes read from the image.
+            ferr_ax_hist.append((f_c - f_r).abs().mean(dim=(0, 1)).cpu().numpy())  # (3,) m
             foot_hist.append(f_c[0].cpu().numpy())                          # env 0
         n_fid += 1
 
@@ -2073,9 +2218,18 @@ def evaluate(env, clip: dict, policy: MLP, device: str, n_episodes: int = 5,
         # mean per-foot Cartesian error (cm).
         results["e_q_deg"] = round(float(np.rad2deg(np.sqrt(jsq_sum / max(jsq_n, 1)))), 1)
         results["e_p_cm"] = round(float(np.mean(ferr_hist) * 100.0), 1) if ferr_hist else None
+        if ferr_ax_hist:
+            _ax = np.mean(np.stack(ferr_ax_hist), axis=0) * 100.0            # (3,) cm
+            results["e_p_axis_cm"] = {"x_foreaft": round(float(_ax[0]), 1),
+                                      "y_lateral": round(float(_ax[1]), 1),
+                                      "z_vertical": round(float(_ax[2]), 1)}
         print("\n[Eval] ---- reference fidelity (DETERMINISTIC policy vs clip gait) ----")
         print(f"  PHYSICAL error: e_q = {results['e_q_deg']} deg (RMS joint)  |  "
               f"e_p = {results['e_p_cm']} cm (mean per-foot)")
+        if "e_p_axis_cm" in results:
+            _a = results["e_p_axis_cm"]
+            print(f"  e_p by body axis (cm):  fore-aft {_a['x_foreaft']}  "
+                  f"LATERAL {_a['y_lateral']}  vertical {_a['z_vertical']}")
         print(f"  per-step (deterministic):  r_joint={results['r_joint']:.2f}  "
               f"r_foot={results['r_foot'] if results['r_foot'] is not None else float('nan'):.2f}   (1.0=perfect; sigmas 0.5/0.3)")
         print(f"  joint err |q-q_ref| (rad)  front / hind:  "
@@ -2347,6 +2501,9 @@ def main():
     # Single env for eval, multiple for training
     num_envs = 1 if args_cli.mode == "eval" else args_cli.num_envs
     env = make_env(num_envs, args_cli.stiffness, args_cli.damping)
+    if not args_cli.no_studio_light:
+        apply_studio_lighting()
+    env = maybe_wrap_video(env)
 
     pobs_dim = OBS_DIM + (2 if args_cli.phase_obs else 0)
     if args_cli.phase_obs:
@@ -2545,7 +2702,8 @@ def main():
         print(f"[Eval] Loaded {'RL' if is_rl else 'BC'} policy from {args_cli.ckpt} "
               f"(obs dim {ckpt_obs_dim}{', phase clock' if use_phase else ''})")
 
-        eval_results = evaluate(env, clip, policy, device, n_episodes=10, use_phase=use_phase,
+        eval_results = evaluate(env, clip, policy, device, n_episodes=args_cli.eval_episodes,
+                                use_phase=use_phase,
                                 dump_rollout=os.path.join(ckpt_dir, "rollout.npz"))
         # Record eval config + results next to the model (ckpt_dir set above) so each
         # policy_rl_<hash>/ folder ends up with train_config.yaml + eval_config.yaml + logs.
