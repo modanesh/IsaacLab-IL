@@ -70,7 +70,7 @@ python scripts/environments/train_motion_imitation.py --motion scripts/environme
 
 Key reward knobs: `--rl_root_w` (forward-speed demand), `--rl_foot_z_weight` (clearance),
 `--rl_joint_w`, `--rl_sigma`, `--rl_action_rate_w`. Checkpoints land in
-`scripts/environments/checkpoints/<clip>/policy_rl_<hash>/`.
+`../checkpoints/<clip>/policy_rl_<hash>/` in the CopyQuad repo.
 
 ---
 
@@ -88,7 +88,7 @@ python scripts/environments/anymal_motion_playback.py --motion scripts/environme
 ## 🐕 Shipped assets
 
 Five reference motions and one trained policy each, under
-`scripts/environments/data/motions/` and `scripts/environments/checkpoints/`:
+`scripts/environments/data/motions/` (policies live in the CopyQuad repo's `checkpoints/`):
 
 | Motion | Behavior | Policy |
 |---|---|---|

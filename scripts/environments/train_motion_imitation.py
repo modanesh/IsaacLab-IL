@@ -217,8 +217,9 @@ parser.add_argument("--ckpt", type=str, default=None,
                     help="Checkpoint to load for eval, or BC checkpoint to init RL from.")
 parser.add_argument("--bc_ckpt", type=str, default=None,
                     help="BC checkpoint to use as RL initialization.")
-parser.add_argument("--save_dir", type=str, default="scripts/environments/checkpoints",
-                    help="Relative to IsaacLab/, i.e. where the released checkpoints live.")
+parser.add_argument("--save_dir", type=str, default="../checkpoints",
+                    help="Relative to IsaacLab/, i.e. the CopyQuad repo's checkpoints/ "
+                         "where the released policies live.")
 parser.add_argument("--stiffness", type=float, default=200.0)
 parser.add_argument("--damping", type=float, default=5.0)
 parser.add_argument("--task-reward-weight", type=float, default=0.0,
