@@ -119,8 +119,9 @@ parser.add_argument("--rl_iters", type=int, default=2000)
 parser.add_argument("--rl_steps", type=int, default=24,
                     help="Rollout steps per PPO iteration (horizon).")
 parser.add_argument("--rl_lr", type=float, default=1e-4)
-parser.add_argument("--rl_sigma", type=float, default=0.25,
-                    help="Sigma for joint-tracking reward: exp(-||dq||^2 / sigma^2).")
+parser.add_argument("--rl_sigma", type=float, default=0.5,
+                    help="Sigma for joint-tracking reward: exp(-||dq||^2 / sigma^2). "
+                         "0.5 is the value every released checkpoint was trained with.")
 parser.add_argument("--rl_vel_weight", type=float, default=0.5,
                     help="Weight for forward velocity reward component.")
 
@@ -140,8 +141,9 @@ parser.add_argument("--rl_root_w", type=float, default=0.2,
                     help="Weight of the ROOT term: fore-aft/lateral body-frame velocity "
                          "(from recover_root_translation.py) + base height. Drives real "
                          "forward locomotion and forbids crouch. 0 disables.")
-parser.add_argument("--rl_foot_sigma", type=float, default=0.20,
-                    help="Sigma (m) for the foot-position tracking term.")
+parser.add_argument("--rl_foot_sigma", type=float, default=0.25,
+                    help="Sigma (m) for the foot-position tracking term. "
+                         "0.25 is the value every released checkpoint was trained with.")
 parser.add_argument("--rl_foot_z_weight", type=float, default=1.0,
                     help="Weight on the VERTICAL (clearance) component of the foot error. "
                          ">1 stops the fore-aft stride from dominating the foot term, which "
@@ -215,7 +217,8 @@ parser.add_argument("--ckpt", type=str, default=None,
                     help="Checkpoint to load for eval, or BC checkpoint to init RL from.")
 parser.add_argument("--bc_ckpt", type=str, default=None,
                     help="BC checkpoint to use as RL initialization.")
-parser.add_argument("--save_dir", type=str, default="./checkpoints")
+parser.add_argument("--save_dir", type=str, default="scripts/environments/checkpoints",
+                    help="Relative to IsaacLab/, i.e. where the released checkpoints live.")
 parser.add_argument("--stiffness", type=float, default=200.0)
 parser.add_argument("--damping", type=float, default=5.0)
 parser.add_argument("--task-reward-weight", type=float, default=0.0,

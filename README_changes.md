@@ -6,7 +6,7 @@ the pipeline: turning a lifted 3D reference into an ANYmal-D policy that reprodu
 animal's gait.
 
 > 📥 The 3D keypoint CSV that feeds step 3 comes from the top-level
-> [CopyQuad](https://github.com/modanesh/CopyQuad) repo (DeepLabCut -> Video-Depth-Anything).
+> [CopyQuad](https://github.com/modanesh/CopyQuad) repo (DeepLabCut -> make_3d_csv.py; no depth model).
 > This fork ships as its `IsaacLab/` submodule.
 
 ```

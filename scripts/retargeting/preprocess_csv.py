@@ -1,18 +1,17 @@
 """
-preprocess_csv.py Convert a video-keypoint CSV (DLC + depth) to a
-retargeting-ready .npz
+preprocess_csv.py Convert a video-keypoint CSV to a retargeting-ready .npz
 
 Coordinate convention
 ---------------------
-The source CSV comes from copydog's video pipeline (DeepLabCut 2D keypoints +
-Video-Depth-Anything depth, see copydog/scripts/get_depth.py) and is in a
-right-handed CAMERA/IMAGE frame:
+The source CSV comes from copydog's video pipeline (DeepLabCut 2D keypoints,
+then scripts/make_3d_csv.py to add the third column) and is in a right-handed
+CAMERA/IMAGE frame:
 
     x_src: image x, pixels, positive right
     y_src: image y, pixels, positive DOWN
-    z_src: root-relative depth offset, positive AWAY from the camera
-           (uncalibrated units derived from disparity much smaller in
-           magnitude than the pixel axes; see get_depth.py)
+    z_src: root-relative depth offset, positive AWAY from the camera.
+           CopyQuad uses no depth model, so this is a constant and the axis
+           carries no signal; retargeting pins it with --lateral-mode pin.
 
 IsaacLab uses a z-up right-handed frame (x, y, z)_iso. We convert with a
 proper rotation of -90° about the x-axis:
@@ -33,7 +32,8 @@ IsaacLab coordinates and requires no further changes.
 
 NOTE: the three axes are NOT in the same units (x, z in pixels; y in depth
 units). Per-axis scale factors in helpers.compute_scale_factors absorb this
-to first order, but the y axis carries far less signal than x/z.
+to first order. With a constant z_src the y_iso axis is flat, which is what
+--lateral-mode pin expects.
 """
 
 from __future__ import annotations
@@ -88,7 +88,7 @@ def parse_keypoint_csv(csv_path: str) -> dict[str, np.ndarray]:
     z-up coordinate frame via ``_camera_to_isaac``.
 
     Args:
-        csv_path: Path to the keypoint CSV file (output of copydog's get_depth.py).
+        csv_path: Path to the keypoint CSV file (output of copydog's make_3d_csv.py).
 
     Returns:
         A dict mapping each body-part name to a float32 array of shape
@@ -536,7 +536,7 @@ def csv_to_npz(
     """Convert a video-keypoint CSV to retarget-ready npz  (Acts as the main function for this script).
 
     Args:
-        csv_path:    Input keypoint CSV (DeepLabCut + depth, from copydog).
+        csv_path:    Input keypoint CSV (DeepLabCut + constant z, from copydog).
         output_path: Destination .npz.
         fps:         Source frame rate (Hz).
         lh_threshold: Likelihood threshold below which frames are interpolated.
@@ -613,7 +613,7 @@ def csv_to_npz(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Convert animal video-keypoint CSV (DLC + depth) to retargeting .npz")
+    parser = argparse.ArgumentParser(description="Convert animal video-keypoint CSV to retargeting .npz")
     parser.add_argument("--csv", type=str, required=True)
     parser.add_argument("--output", type=str, required=True)
     parser.add_argument("--fps", type=float, required=True)
